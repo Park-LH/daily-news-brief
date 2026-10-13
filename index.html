@@ -1,0 +1,67 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>每日新闻简报 📰</title>
+<link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+<div class="app">
+
+  <!-- ===== 页头 ===== -->
+  <header class="header">
+    <span class="news-logo">📰</span>
+    <h1>每日新闻简报</h1>
+    <p class="date" id="dateText"></p>
+    <button class="btn-generate" id="btnGenerate">生成今日简报</button>
+  </header>
+
+  <!-- ===== 加载中提示（默认隐藏） ===== -->
+  <div class="loading hidden" id="loading">
+    <span class="spinner"></span>
+    正在抓取最新新闻，请稍候…
+  </div>
+
+  <!-- ===== 简报区域（初始为空，由 js/app.js 填充内容） ===== -->
+  <main class="briefing hidden" id="briefing">
+
+    <!-- 科技分类 -->
+    <section class="category" id="cat-科技">
+      <h2><span class="cat-icon">💻</span> 科技</h2>
+      <div class="news-list"></div>
+    </section>
+
+    <!-- 财经分类 -->
+    <section class="category" id="cat-财经">
+      <h2><span class="cat-icon">💰</span> 财经</h2>
+      <div class="news-list"></div>
+    </section>
+
+    <!-- 生活分类 -->
+    <section class="category" id="cat-生活">
+      <h2><span class="cat-icon">🌿</span> 生活</h2>
+      <div class="news-list"></div>
+    </section>
+
+  </main>
+
+  <!-- ===== 空状态提示（还没生成时的默认画面） ===== -->
+  <div class="empty" id="empty">
+    <div class="empty-icon">🗞️</div>
+    <p>点击上方按钮，生成属于你的今日新闻简报</p>
+    <p class="empty-tip">共 5 个免费 RSS 源 · 最多 10 条新闻 · 分三个板块展示</p>
+  </div>
+
+  <!-- ===== 错误提示（默认隐藏） ===== -->
+  <div class="error hidden" id="error"></div>
+
+  <footer>数据来自公开 RSS 源，仅供个人学习使用</footer>
+</div>
+
+<!-- 脚本按依赖顺序引入：先配置，再工具，最后主逻辑 -->
+<script src="js/config.js"></script>
+<script src="js/rss.js"></script>
+<script src="js/app.js"></script>
+</body>
+</html>
