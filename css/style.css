@@ -1,0 +1,260 @@
+/* ============================================================
+   style.css —— 每日新闻简报的样式
+   采用"移动优先"写法：先写手机样式，再用 @media 写电脑样式
+   ============================================================ */
+
+* { margin: 0; padding: 0; box-sizing: border-box; }
+
+:root {
+  --ink: #1e293b;        /* 主文字色 */
+  --ink-light: #64748b;  /* 次要文字色 */
+  --accent: #4f46e5;     /* 主题色（按钮、标题） */
+  --accent-dark: #4338ca;
+  --card: #ffffff;
+  --tile-pink: #fbcfe8;  /* 马赛克：粉色瓷砖 */
+  --tile-blue: #bfdbfe;  /* 马赛克：蓝色瓷砖 */
+}
+
+/* ============================================================
+   防窥玻璃马赛克背景（粉 × 蓝）
+   实现原理（零基础解释）：
+   防窥玻璃 = 雾面玻璃小方格 + 半透明 + 轻微模糊。
+   网页里用"雾面底色层 + 微小棋盘纹理"来模拟：
+     1. 粉→蓝双色柔光雾面底（模拟防窥膜的磨砂观感）
+     2. 密集的半透明小方格（模拟马赛克玻璃砖）
+     3. 每块玻璃砖带一点高光（有玻璃质感）
+   ============================================================ */
+body::before {
+  content: "";
+  position: fixed;        /* 固定铺满整个视口，不随滚动 */
+  inset: 0;
+  z-index: -1;            /* 放在所有内容的最底层 */
+  background-color: var(--tile-pink);
+
+  /* 1. 粉蓝双色雾面底（两个大范围柔光渐变叠加） */
+  background-image:
+    radial-gradient(ellipse 80% 60% at 20% 15%, rgba(191, 219, 254, 0.75), transparent 60%),
+    radial-gradient(ellipse 70% 60% at 85% 85%, rgba(251, 207, 232, 0.85), transparent 65%),
+    /* 2. 密集玻璃砖棋盘（半透明白块 × 半透明色块交替） */
+    repeating-conic-gradient(
+      rgba(255, 255, 255, 0.10) 0% 25%,
+      rgba(255, 255, 255, 0) 0% 50%),
+    /* 3. 玻璃砖高光与勾缝（左上高光，右下微阴影） */
+    linear-gradient(135deg,
+      rgba(255, 255, 255, 0.18) 0%,
+      rgba(255, 255, 255, 0) 40%,
+      rgba(30, 27, 75, 0.10) 100%);
+  background-size:
+    auto, auto,
+    34px 34px,   /* 玻璃砖尺寸：34px 内含 2×2 块 17px 小砖 */
+    34px 34px;
+}
+
+body {
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI",
+               "PingFang SC", "Microsoft YaHei", sans-serif;
+  color: var(--ink);
+  min-height: 100vh;
+}
+
+/* 页面主容器：手机上占满宽度，电脑上限制最大宽度并居中 */
+.app {
+  max-width: 720px;
+  margin: 0 auto;
+  padding: 24px 16px 48px;
+}
+
+/* ===== 页头 ===== */
+.header { text-align: center; margin-bottom: 28px; }
+
+.header h1 { font-size: 26px; letter-spacing: 1px; }
+
+/* 页头大号报纸 emoji：超大尺寸，带轻微悬浮动画 */
+.header .news-logo {
+  display: block;
+  font-size: 96px;          /* 超大报纸图标 */
+  line-height: 1.1;
+  margin-bottom: 8px;
+  filter: drop-shadow(0 8px 12px rgba(79, 70, 229, 0.25));
+  animation: floatY 3.5s ease-in-out infinite;
+}
+
+@keyframes floatY {
+  0%, 100% { transform: translateY(0); }
+  50% { transform: translateY(-8px); }
+}
+
+.header .date {
+  margin-top: 8px;
+  font-size: 14px;
+  color: var(--ink-light);
+}
+
+/* 生成按钮 */
+.btn-generate {
+  margin-top: 20px;
+  padding: 16px 40px;
+  font-size: 17px;
+  font-weight: 700;
+  color: #fff;
+  background: linear-gradient(135deg, #6366f1, #4f46e5);
+  border: none;
+  border-radius: 14px;
+  cursor: pointer;
+  box-shadow: 0 6px 20px rgba(79, 70, 229, 0.35);
+  transition: transform 0.15s ease, box-shadow 0.15s ease;
+}
+
+.btn-generate:hover { transform: translateY(-2px); }
+.btn-generate:active { transform: scale(0.97); }
+.btn-generate:disabled { opacity: 0.5; cursor: not-allowed; transform: none; }
+
+/* ===== 加载中 ===== */
+.loading {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  padding: 32px 0;
+  color: var(--ink-light);
+  font-size: 15px;
+}
+
+/* 旋转的小圆圈动画 */
+.spinner {
+  width: 22px; height: 22px;
+  border: 3px solid #c7d2fe;
+  border-top-color: var(--accent);
+  border-radius: 50%;
+  animation: spin 0.8s linear infinite;
+}
+
+@keyframes spin { to { transform: rotate(360deg); } }
+
+/* ===== 分类板块 ===== */
+.briefing { display: flex; flex-direction: column; gap: 24px; }
+
+.category {
+  background: rgba(255, 255, 255, 0.75);           /* 半透明白 */
+  backdrop-filter: blur(10px);                      /* 毛玻璃模糊，呼应防窥玻璃 */
+  -webkit-backdrop-filter: blur(10px);
+  border: 1px solid rgba(255, 255, 255, 0.6);
+  border-radius: 18px;
+  padding: 20px 16px;
+  box-shadow: 0 4px 16px rgba(15, 23, 42, 0.06);
+}
+
+.category h2 {
+  font-size: 17px;
+  padding-bottom: 12px;
+  margin-bottom: 14px;
+  border-bottom: 3px solid;
+  border-image: linear-gradient(90deg, var(--tile-pink), var(--tile-blue)) 1;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+/* 每个分类右侧的条数小徽章（由 JS 添加） */
+.count-badge {
+  margin-left: auto;
+  font-size: 12px;
+  font-weight: 400;
+  color: var(--ink-light);
+}
+
+/* ===== 单条新闻 ===== */
+.news-list { display: flex; flex-direction: column; gap: 12px; }
+
+.news-item {
+  padding: 14px;
+  background: #f8fafc;
+  border-radius: 12px;
+  transition: background 0.15s ease;
+  animation: fadeUp 0.35s ease;
+}
+
+.news-item:hover { background: #fdf2f8; }
+
+/* 标题即链接，点击打开原文 */
+.news-item a {
+  color: var(--ink);
+  text-decoration: none;
+  font-size: 15px;
+  font-weight: 700;
+  line-height: 1.5;
+}
+
+.news-item a:hover { color: var(--accent); }
+
+/* 一句话摘要 */
+.news-item .summary {
+  margin-top: 6px;
+  font-size: 13px;
+  line-height: 1.6;
+  color: var(--ink-light);
+  /* 最多两行，超出省略，保持版面整齐 */
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+/* 底部信息：来源 + 发布时间 */
+.news-item .meta {
+  margin-top: 8px;
+  font-size: 12px;
+  color: #94a3b8;
+  display: flex;
+  gap: 12px;
+}
+
+@keyframes fadeUp {
+  from { opacity: 0; transform: translateY(8px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+/* ===== 空状态 ===== */
+.empty {
+  text-align: center;
+  padding: 56px 0;
+  color: var(--ink-light);
+}
+
+/* 空状态超大报纸 emoji */
+.empty-icon { font-size: 110px; margin-bottom: 16px; animation: floatY 3.5s ease-in-out infinite; }
+
+.empty p { font-size: 16px; margin-top: 8px; }
+
+.empty-tip { font-size: 13px; color: #94a3b8; }
+
+/* ===== 错误提示 ===== */
+.error {
+  margin-top: 24px;
+  padding: 16px;
+  background: #fef2f2;
+  border: 1px solid #fecaca;
+  border-radius: 12px;
+  color: #b91c1c;
+  font-size: 14px;
+  line-height: 1.6;
+}
+
+footer {
+  margin-top: 40px;
+  text-align: center;
+  font-size: 12px;
+  color: #94a3b8;
+}
+
+/* 隐藏工具类：JS 通过加减这个类来显示/隐藏元素 */
+.hidden { display: none !important; }
+
+/* ===== 电脑端适配（宽度 >= 600px 时生效） ===== */
+@media (min-width: 600px) {
+  .app { padding: 40px 24px 56px; }
+  .header h1 { font-size: 30px; }
+  .category { padding: 24px 22px; }
+  .news-item { padding: 16px; }
+  .news-item a { font-size: 16px; }
+}
