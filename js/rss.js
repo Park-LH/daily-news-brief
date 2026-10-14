@@ -19,20 +19,44 @@ async function fetchRss(feedUrl) {
   const api = "https://api.rss2json.com/v1/api.json?rss_url="
             + encodeURIComponent(feedUrl);
 
-  const resp = await fetch(api);
-  const data = await resp.json();
+  // 超时控制：15 秒没回应就放弃，避免页面一直转圈
+  // （零基础解释：AbortController 就像一个闹钟，到点强制取消这次请求）
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 15000);
+
+  let resp;
+  try {
+    resp = await fetch(api, { signal: controller.signal });
+  } catch (e) {
+    // fetch 本身失败：断网 / 超时 / 接口被网络屏蔽
+    if (e.name === "AbortError") {
+      throw new Error("请求超时（15 秒无响应）");
+    }
+    throw new Error("网络连接失败，请检查是否联网");
+  } finally {
+    clearTimeout(timer);
+  }
+
+  // 把返回的文本解析成 JSON；解析失败说明接口没返回正常数据
+  let data;
+  try {
+    data = await resp.json();
+  } catch (e) {
+    throw new Error("接口返回了无法解析的数据");
+  }
 
   // 接口返回 status 为 "ok" 才算成功
   if (data.status !== "ok") {
-    throw new Error("RSS 源抓取失败: " + feedUrl);
+    throw new Error("该 RSS 源暂时无法抓取");
   }
 
-  // 只保留我们需要的 4 个字段，顺便把 HTML 标签从摘要里清掉
+  // 只保留我们需要的字段，顺便把 HTML 标签从摘要里清掉
   return data.items.map(item => ({
     title: stripHtml(item.title),
     link: item.link,
     summary: stripHtml(item.description || item.summary || ""),
     pubDate: item.pubDate || "",
+    image: extractImage(item),   // 新闻配图地址，可能是空字符串
   }));
 }
 
@@ -44,6 +68,36 @@ function stripHtml(html) {
   const div = document.createElement("div");
   div.innerHTML = html;
   return (div.textContent || "").trim();
+}
+
+/**
+ * 提取新闻配图地址（记者/编辑选用的文章封面图）
+ * 按优先级依次尝试 3 个地方，找到哪个用哪个，都没有则返回 ""
+ *   1. item.thumbnail      —— rss2json 整理好的缩略图字段
+ *   2. item.enclosure      —— RSS 标准的附件字段（很多新闻站的封面图放这里）
+ *   3. 正文 description 里 —— 有的站把图直接嵌在正文第一段 HTML 里
+ */
+function extractImage(item) {
+  // 1. 缩略图字段
+  if (item.thumbnail && item.thumbnail.startsWith("http")) {
+    return item.thumbnail;
+  }
+
+  // 2. 附件字段（必须是图片类型的附件才用）
+  if (item.enclosure && item.enclosure.link
+      && (item.enclosure.type || "").startsWith("image")) {
+    return item.enclosure.link;
+  }
+
+  // 3. 从正文 HTML 里找出第一张 <img> 的地址
+  const div = document.createElement("div");
+  div.innerHTML = item.description || "";
+  const img = div.querySelector("img");
+  if (img && img.src && img.src.startsWith("http")) {
+    return img.src;
+  }
+
+  return "";
 }
 
 /**

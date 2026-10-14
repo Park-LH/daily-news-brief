@@ -1,0 +1,169 @@
+﻿# ============================================================
+# start-server.ps1 —— 零依赖迷你网页服务器（含数据接口）
+# ============================================================
+# 原理（零基础解释）：
+#   Windows 自带 PowerShell，里面有个 HttpListener 组件，
+#   可以监听浏览器请求并把项目文件发回去，不需要安装任何软件。
+# 用法：双击 start-server.bat（它会自动调用本文件）
+#
+# 本服务器提供两类服务：
+#   1. 静态文件：把 html/css/js 文件发给浏览器
+#   2. 数据接口：/api/stats —— 保存和读取历史统计数据（存 .data/stats.json）
+
+$root = Split-Path -Parent $MyInvocation.MyCommand.Path
+$port = 8019
+
+# 统计数据文件的存放位置
+$dataFile = Join-Path $root ".data\stats.json"
+
+# ---------- 启动前检查 1：端口是否被占用 ----------
+# 原理：先试着把 8019 端口"占"一下，如果已被别人占用会抛异常
+$probe = New-Object System.Net.HttpListener
+try {
+  $probe.Prefixes.Add("http://localhost:$port/")
+  $probe.Start()
+  $probe.Stop()
+  $probe.Close()
+} catch {
+  Write-Host "=========================================" -ForegroundColor Red
+  Write-Host "  ❌ 端口被占：$port 已被其他程序使用" -ForegroundColor Red
+  Write-Host ""
+  Write-Host "  请选择以下任一方式解决：" -ForegroundColor Yellow
+  Write-Host "  1. 关掉占用进程（比如之前没关的旧服务器窗口）再重试"
+  Write-Host "  2. 或者修改本文件第 10 行的 `$port = 8019` 换个端口（如 8020）"
+  Write-Host ""
+  Write-Host "  查看是谁占用了端口：在命令行运行"
+  Write-Host "  netstat -ano | findstr :$port"
+  Write-Host "=========================================" -ForegroundColor Red
+  exit 1
+}
+
+# ---------- 启动前检查 2：数据目录与文件是否就绪 ----------
+$dataDir = Split-Path -Parent $dataFile
+if (-not (Test-Path $dataDir)) {
+  New-Item -ItemType Directory -Path $dataDir -Force | Out-Null
+  Write-Host "已自动创建数据目录: .data\"
+}
+if (-not (Test-Path $dataFile)) {
+  "{}" | Out-File -FilePath $dataFile -Encoding utf8
+  Write-Host "已自动创建空数据文件: .data\stats.json"
+}
+
+$listener = New-Object System.Net.HttpListener
+$listener.Prefixes.Add("http://localhost:$port/")
+$listener.Start()
+
+Write-Host "========================================="
+Write-Host "  服务器已启动: http://localhost:$port/"
+Write-Host "  正在打开浏览器…"
+Write-Host "  停止方法：直接关闭本窗口"
+Write-Host "========================================="
+
+Start-Process "http://localhost:$port/"
+
+# 文件后缀 → 网页内容类型 对照表
+$mime = @{
+  ".html" = "text/html; charset=utf-8"
+  ".css"  = "text/css; charset=utf-8"
+  ".js"   = "application/javascript; charset=utf-8"
+  ".md"   = "text/plain; charset=utf-8"
+  ".png"  = "image/png"
+  ".jpg"  = "image/jpeg"
+  ".jpeg" = "image/jpeg"
+  ".gif"  = "image/gif"
+  ".svg"  = "image/svg+xml"
+  ".ico"  = "image/x-icon"
+}
+
+# ---------- 数据接口的工具函数 ----------
+
+# 读取统计文件；没有或损坏则返回空对象
+function Read-StatsFile {
+  if (Test-Path $dataFile) {
+    try {
+      return (Get-Content $dataFile -Raw -Encoding UTF8 | ConvertFrom-Json)
+    } catch {
+      return $null
+    }
+  }
+  return $null
+}
+
+# 把统计对象写回文件（自动创建 .data 文件夹）
+function Write-StatsFile($obj) {
+  $dir = Split-Path -Parent $dataFile
+  if (-not (Test-Path $dir)) {
+    New-Item -ItemType Directory -Path $dir -Force | Out-Null
+  }
+  $obj | ConvertTo-Json -Depth 5 | Out-File -FilePath $dataFile -Encoding utf8
+}
+
+# 给浏览器回一段 JSON
+function Send-Json($ctx, $obj) {
+  $json = $obj | ConvertTo-Json -Depth 5
+  $bytes = [Text.Encoding]::UTF8.GetBytes($json)
+  $ctx.Response.ContentType = "application/json; charset=utf-8"
+  $ctx.Response.ContentLength64 = $bytes.Length
+  $ctx.Response.OutputStream.Write($bytes, 0, $bytes.Length)
+}
+
+# ---------- 主循环：等待并处理请求 ----------
+
+while ($listener.IsListening) {
+  $ctx = $listener.GetContext()
+  try {
+    $path = [Uri]::UnescapeDataString($ctx.Request.Url.AbsolutePath)
+
+    # ===== 接口 1：/api/stats 数据的保存与读取 =====
+    if ($path -eq "/api/stats") {
+      if ($ctx.Request.HttpMethod -eq "POST") {
+        # POST = 保存某一天的分类数据
+        # 请求体格式：{"date":"2026-10-13","stats":{"科技":3,"财经":7,"生活":0,"total":10}}
+        $reader = New-Object IO.StreamReader($ctx.Request.InputStream)
+        $body = $reader.ReadToEnd()
+        $data = $body | ConvertFrom-Json
+
+        $stats = Read-StatsFile
+        if ($null -eq $stats) { $stats = [PSCustomObject]@{} }
+        # 同一天重复保存会覆盖旧的（-Force）
+        $stats | Add-Member -NotePropertyName $data.date -NotePropertyValue $data.stats -Force
+        Write-StatsFile $stats
+
+        Send-Json $ctx @{ ok = $true }
+      } else {
+        # GET = 读取全部历史数据
+        # 返回格式：{"2026-10-12":{"科技":2,...},"2026-10-13":{...}}
+        $stats = Read-StatsFile
+        if ($null -eq $stats) { $stats = [PSCustomObject]@{} }
+        Send-Json $ctx $stats
+      }
+      $ctx.Response.Close()
+      continue
+    }
+
+    # ===== 接口 2：静态文件 =====
+    if ($path -eq "/") { $path = "/index.html" }
+
+    # 拼出本地文件路径，并检查它确实在项目文件夹里（安全防护）
+    $file = [IO.Path]::GetFullPath((Join-Path $root ($path -replace "/", "\")))
+    if (-not $file.StartsWith($root)) {
+      $ctx.Response.StatusCode = 403
+      $ctx.Response.Close()
+      continue
+    }
+
+    if (Test-Path $file -PathType Leaf) {
+      $ext = [IO.Path]::GetExtension($file).ToLower()
+      $bytes = [IO.File]::ReadAllBytes($file)
+      $ctx.Response.ContentType = if ($mime.ContainsKey($ext)) { $mime[$ext] } else { "application/octet-stream" }
+      $ctx.Response.ContentLength64 = $bytes.Length
+      $ctx.Response.OutputStream.Write($bytes, 0, $bytes.Length)
+    } else {
+      $ctx.Response.StatusCode = 404
+    }
+  } catch {
+    # 单个请求出错不影响服务器继续运行
+    try { $ctx.Response.StatusCode = 500 } catch {}
+  }
+  $ctx.Response.Close()
+}
