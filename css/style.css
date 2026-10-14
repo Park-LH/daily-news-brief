@@ -172,7 +172,33 @@ body {
   border-radius: 12px;
   transition: background 0.15s ease;
   animation: fadeUp 0.35s ease;
+  /* 左图右文的布局 */
+  display: flex;
+  gap: 12px;
+  align-items: flex-start;
 }
+
+/* 新闻配图（左边的封面图） */
+.news-thumb {
+  flex: 0 0 86px;            /* 固定宽度 86px，不随内容伸缩 */
+  height: 86px;
+  width: 86px;
+  object-fit: cover;          /* 图片按比例裁剪填满方格，不变形 */
+  border-radius: 10px;
+  box-shadow: 0 2px 8px rgba(15, 23, 42, 0.12);
+}
+
+/* 没有配图时的占位样式（🖼️ 图标 + 淡色底） */
+.news-thumb-fallback {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 30px;
+  background: linear-gradient(135deg, #fce7f3, #dbeafe);
+}
+
+/* 右侧文字区域 */
+.news-body { flex: 1; min-width: 0; }
 
 .news-item:hover { background: #fdf2f8; }
 
@@ -240,11 +266,115 @@ body {
   line-height: 1.6;
 }
 
+/* 多行详细错误提示：让 \n 换行符真正换行 */
+.error-detail { white-space: pre-line; }
+
 footer {
   margin-top: 40px;
   text-align: center;
   font-size: 12px;
   color: #94a3b8;
+}
+
+/* ===== 历史新闻统计卡片 ===== */
+.news-stats-card {
+  margin-top: 24px;
+  background: rgba(255, 255, 255, 0.75);
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
+  border: 1px solid rgba(255, 255, 255, 0.6);
+  border-radius: 18px;
+  padding: 20px 16px;
+  box-shadow: 0 4px 16px rgba(15, 23, 42, 0.06);
+}
+
+.news-stats-card h2 {
+  font-size: 17px;
+  padding-bottom: 12px;
+  margin-bottom: 14px;
+  border-bottom: 3px solid;
+  border-image: linear-gradient(90deg, var(--tile-pink), var(--tile-blue)) 1;
+}
+
+.stats-summary {
+  font-size: 13px;
+  color: var(--ink-light);
+  margin-bottom: 12px;
+}
+
+/* 图例：三个色点 + 分类名 */
+.stats-legend {
+  display: flex;
+  gap: 16px;
+  font-size: 12px;
+  color: var(--ink-light);
+  margin-bottom: 8px;
+}
+
+.stats-legend span { display: flex; align-items: center; gap: 5px; }
+
+.stats-legend .dot {
+  width: 10px; height: 10px;
+  border-radius: 3px;
+  display: inline-block;
+}
+
+/* 堆叠柱状图：每天一根柱，柱内按分类颜色分段 */
+.stats-bars {
+  display: flex;
+  align-items: flex-end;
+  gap: 8px;
+  height: 120px;
+  margin-bottom: 16px;
+  padding: 0 4px;
+}
+
+.sbar-col {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  height: 100%;
+}
+
+.sbar {
+  width: 100%;
+  max-width: 34px;
+  border-radius: 6px 6px 2px 2px;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;   /* 分段从上往下堆叠 */
+  min-height: 2px;
+}
+
+.sbar-col span { font-size: 11px; color: #94a3b8; }
+
+/* 统计明细表 */
+.news-stats-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+
+.news-stats-table th {
+  background: rgba(240, 249, 255, 0.9);
+  color: #075985;
+  font-weight: 700;
+  padding: 10px 6px;
+}
+
+.news-stats-table td {
+  padding: 10px 6px;
+  text-align: center;
+  border-top: 1px solid #e0f2fe;
+  color: #334155;
+}
+
+.news-stats-table tr.today td {
+  background: rgba(236, 254, 255, 0.9);
+  font-weight: 700;
+  color: #0c4a6e;
 }
 
 /* 隐藏工具类：JS 通过加减这个类来显示/隐藏元素 */

@@ -56,12 +56,39 @@
   <!-- ===== 错误提示（默认隐藏） ===== -->
   <div class="error hidden" id="error"></div>
 
+  <!-- ===== 历史新闻统计（默认隐藏，生成简报后由 js/stats.js 填充） ===== -->
+  <section class="news-stats-card hidden" id="statsCard">
+    <h2>📈 历史新闻统计（近 7 天）</h2>
+    <div class="stats-summary" id="statsSummary"></div>
+    <div class="stats-legend">
+      <span><i class="dot" style="background:#3b82f6"></i>科技</span>
+      <span><i class="dot" style="background:#f59e0b"></i>财经</span>
+      <span><i class="dot" style="background:#ec4899"></i>生活</span>
+    </div>
+    <div class="stats-bars" id="statsBars"></div>
+    <div class="stats-table-wrap">
+      <table class="news-stats-table">
+        <thead>
+          <tr>
+            <th>日期</th>
+            <th>科技</th>
+            <th>财经</th>
+            <th>生活</th>
+            <th>合计</th>
+          </tr>
+        </thead>
+        <tbody id="statsBody"></tbody>
+      </table>
+    </div>
+  </section>
+
   <footer>数据来自公开 RSS 源，仅供个人学习使用</footer>
 </div>
 
-<!-- 脚本按依赖顺序引入：先配置，再工具，最后主逻辑 -->
+<!-- 脚本按依赖顺序引入：先配置，再工具，再统计，最后主逻辑 -->
 <script src="js/config.js"></script>
 <script src="js/rss.js"></script>
+<script src="js/stats.js"></script>
 <script src="js/app.js"></script>
 </body>
 </html>
