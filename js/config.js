@@ -12,36 +12,47 @@
  * 想换源：改 url 即可；想加源：往数组里照格式加一项。
  */
 
+/**
+ * 【注意事项（2026-10 实测结果）】
+ * 下面 5 个源都是实测通过、能正常抓取的。
+ * 早期版本用的 36氪 / 少数派 / 虎嗅 / 知乎每日精选，
+ * 在 rss2json 接口上已返回 422/500（源站限制），所以更换为以下源：
+ *   科技 → IT之家、Solidot
+ *   财经 → 华尔街见闻、BBC中文
+ *   生活 → 阮一峰周刊（更新频率较低，每次约 3 条，属正常）
+ * 如果将来某个源又失效了，页面会提示"以下源暂时无法访问"，
+ * 届时照本节格式替换 url 即可。
+ */
 const RSS_SOURCES = [
   {
-    name: "36氪",
-    url: "https://36kr.com/feed",          // 36氪官方 RSS
+    name: "IT之家",
+    url: "https://www.ithome.com/rss/",     // IT之家官方 RSS（科技）
     category: "科技",
     maxItems: 4,
   },
   {
-    name: "少数派",
-    url: "https://www.sspai.com/feed",      // 少数派官方 RSS
-    category: "科技",
-    maxItems: 3,
-  },
-  {
-    name: "虎嗅",
-    url: "https://www.huxiu.com/rss/0.xml", // 虎嗅官方 RSS
+    name: "Solidot",
+    url: "https://www.solidot.org/index.rss", // Solidot 官方 RSS（科技）
     category: "科技",
     maxItems: 3,
   },
   {
     name: "华尔街见闻",
-    url: "https://dedicated.wallstreetcn.com/rss.xml", // 华尔街见闻 RSS
+    url: "https://dedicated.wallstreetcn.com/rss.xml", // 华尔街见闻 RSS（财经）
     category: "财经",
     maxItems: 4,
   },
   {
-    name: "知乎每日精选",
-    url: "https://www.zhihu.com/rss",       // 知乎每日精选 RSS
+    name: "BBC中文",
+    url: "https://feeds.bbci.co.uk/zhongwen/simp/rss.xml", // BBC中文 RSS（财经/国际）
+    category: "财经",
+    maxItems: 3,
+  },
+  {
+    name: "阮一峰周刊",
+    url: "http://www.ruanyifeng.com/blog/atom.xml", // 阮一峰科技爱好者周刊（生活）
     category: "生活",
-    maxItems: 4,
+    maxItems: 3,
   },
 ];
 

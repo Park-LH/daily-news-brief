@@ -37,11 +37,15 @@
 
 | 来源 | 分类 | 地址 |
 |---|---|---|
-| 36氪 | 科技 | https://36kr.com/feed |
-| 少数派 | 科技 | https://www.sspai.com/feed |
-| 虎嗅 | 科技 | https://www.huxiu.com/rss/0.xml |
+| IT之家 | 科技 | https://www.ithome.com/rss/ |
+| Solidot | 科技 | https://www.solidot.org/index.rss |
 | 华尔街见闻 | 财经 | https://dedicated.wallstreetcn.com/rss.xml |
-| 知乎每日精选 | 生活 | https://www.zhihu.com/rss |
+| BBC中文 | 财经 | https://feeds.bbci.co.uk/zhongwen/simp/rss.xml |
+| 阮一峰周刊 | 生活 | http://www.ruanyifeng.com/blog/atom.xml |
+
+> 2026-10 实测说明：早期的 36氪 / 少数派 / 虎嗅 / 知乎每日精选
+> 在 rss2json 接口上已返回 422/500（源站限制），已替换为上表 5 个可用源。
+> 阮一峰周刊更新频率较低（每次约 3 条），属于正常现象。
 
 想换新闻源：打开 `js/config.js`，按注释修改即可。
 
