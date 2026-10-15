@@ -14,6 +14,13 @@
 // 小工具：按 id 获取页面元素
 const $ = id => document.getElementById(id);
 
+// ---- 沉浸浏览（阶段 1）用到的两个全局变量 ----
+// latestNews：本次生成的新闻列表，沉浸浏览要按顺序一张张显示
+// immIndex：当前显示的是第几条（从 0 开始数）
+// 阶段 2 做上下翻页时，就是改 immIndex 再重新渲染卡片
+let latestNews = [];
+let immIndex = 0;
+
 // 页面打开时，在页头显示今天的日期
 $("dateText").textContent = new Date().toLocaleDateString("zh-CN", {
   year: "numeric", month: "long", day: "numeric", weekday: "long",
@@ -70,6 +77,81 @@ function renderCategory(category, newsList) {
     </article>
   `).join("");
 }
+
+/* ============================================================
+   沉浸浏览（抖音式卡片）—— 阶段 1：只负责"把一条新闻画成卡片"
+   后面阶段会在此基础上加：上下翻页（阶段2）、手势（阶段3）、
+   正式的视图切换开关（阶段4）
+   ============================================================ */
+
+/**
+ * 把当前这条新闻（latestNews[immIndex]）画成一张全屏卡片
+ */
+function renderImmersiveCard() {
+  const card = $("immCard");
+
+  // 还没生成新闻：显示一句提示，避免空白
+  if (!latestNews.length) {
+    $("immCounter").textContent = "第 0 / 0 条";
+    card.innerHTML = '<div class="imm-empty-card">还没有新闻，请先回到列表页生成今日简报</div>';
+    return;
+  }
+
+  const news = latestNews[immIndex];
+
+  // 顶部显示"第 N / M 条"
+  $("immCounter").textContent = `第 ${immIndex + 1} / ${latestNews.length} 条`;
+
+  // 分类徽章的颜色：科技蓝、财经橙、生活粉
+  const badgeColors = { 科技: "#3b82f6", 财经: "#f59e0b", 生活: "#ec4899" };
+  const badgeColor = badgeColors[news.category] || "#4f46e5";
+
+  card.innerHTML = `
+    <!-- 上半屏：封面大图；加载失败或无图时显示 🖼️ 占位 -->
+    <div class="imm-media">
+      <div class="imm-fallback">🖼️</div>
+      ${news.image
+        ? `<img src="${news.image}" alt="新闻封面"
+             onerror="this.remove()">`   // 图片打不开就把自己删掉，露出占位图标
+        : ""}
+      <span class="imm-badge" style="background:${badgeColor}">${news.category}</span>
+    </div>
+
+    <!-- 下半屏：标题 + 摘要 + 来源时间 + 打开原文按钮 -->
+    <div class="imm-info">
+      <h3 class="imm-title">${news.title}</h3>
+      <p class="imm-summary">${news.summary || "（这条新闻没有自带摘要，点下方按钮查看原文）"}</p>
+      <div class="imm-meta">
+        <span>来源：${news.source}</span>
+        ${news.time ? `<span>${news.time}</span>` : ""}
+      </div>
+      <a class="imm-open" href="${news.link}" target="_blank" rel="noopener">
+        打开原文 ↗
+      </a>
+    </div>
+  `;
+}
+
+/** 打开沉浸浏览 */
+function openImmersive() {
+  renderImmersiveCard();
+  $("immersiveView").classList.remove("hidden");
+  document.body.style.overflow = "hidden";   // 锁住背景滚动，只让卡片动
+}
+
+/** 关闭沉浸浏览，回到列表 */
+function closeImmersive() {
+  $("immersiveView").classList.add("hidden");
+  document.body.style.overflow = "";         // 恢复背景滚动
+}
+
+// 阶段 1 的临时入口 + 退出按钮（阶段 4 会换成正式开关）
+$("btnPreviewImm").addEventListener("click", openImmersive);
+$("immClose").addEventListener("click", closeImmersive);
+// 按 ESC 也能退出，避免不小心被困在沉浸视图里
+document.addEventListener("keydown", e => {
+  if (e.key === "Escape") closeImmersive();
+});
 
 /**
  * 点击"生成今日简报"按钮时执行的完整流程
@@ -147,6 +229,12 @@ $("btnGenerate").addEventListener("click", async () => {
     renderCategory("科技", techList);
     renderCategory("财经", finList);
     renderCategory("生活", lifeList);
+
+    // ---- 阶段1：把这批新闻交给沉浸浏览，并显示临时预览按钮 ----
+    latestNews = topNews;      // 沉浸浏览按顺序显示这批新闻
+    immIndex = 0;              // 从第一条开始
+    renderImmersiveCard();
+    $("btnPreviewImm").classList.remove("hidden");
 
     // ---- 第 5 步：记录今天的分类数据并渲染历史统计图 ----
     // （只有至少一个源连接成功才记录，避免把"全部失败"记成 0 条）

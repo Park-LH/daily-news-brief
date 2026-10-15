@@ -377,6 +377,212 @@ footer {
   color: #0c4a6e;
 }
 
+/* ============================================================
+   沉浸浏览（抖音式竖屏卡片）—— 阶段 1：仅布局
+   电脑端：中间一个"手机框"，竖屏比例，居中显示
+   手机端：直接铺满整屏（见下方 @media max-width:599px）
+   ============================================================ */
+
+/* 铺满全屏的半透明遮罩，让沉浸视图盖在其他内容之上 */
+.immersive {
+  position: fixed;
+  inset: 0;                    /* 上右下左都贴边 = 铺满屏幕 */
+  z-index: 100;                /* 层级要高，才能盖住下面的列表 */
+  display: flex;
+  align-items: center;         /* 垂直居中 */
+  justify-content: center;     /* 水平居中 */
+  padding: 16px;
+  background: rgba(15, 23, 42, 0.55);
+  backdrop-filter: blur(6px);
+  -webkit-backdrop-filter: blur(6px);
+}
+
+/* 中间的竖屏"手机框" */
+.imm-stage {
+  position: relative;
+  width: 100%;
+  max-width: 420px;            /* 最宽 420px，窄屏自动缩小 */
+  height: 100%;
+  max-height: 760px;           /* 最高 760px，矮屏自动缩小 */
+  background: #0f172a;
+  border-radius: 24px;
+  overflow: hidden;                     /* 超出圆角的内容裁掉 */
+  box-shadow: 0 24px 60px rgba(0, 0, 0, 0.35);
+  display: flex;
+  flex-direction: column;
+}
+
+/* ----- 顶部小条：条数指示 + 退出按钮 ----- */
+.imm-topbar {
+  position: absolute;          /* 浮在卡片之上 */
+  top: 0; left: 0; right: 0;
+  z-index: 3;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 12px 14px;
+}
+
+.imm-counter {
+  font-size: 12px;
+  color: #fff;
+  background: rgba(0, 0, 0, 0.35);
+  padding: 5px 12px;
+  border-radius: 999px;
+}
+
+.imm-close {
+  width: 34px; height: 34px;
+  border: none;
+  border-radius: 50%;
+  background: rgba(0, 0, 0, 0.35);
+  color: #fff;
+  font-size: 16px;
+  cursor: pointer;
+}
+
+.imm-close:hover { background: rgba(0, 0, 0, 0.55); }
+
+/* ----- 单条新闻卡片：上半屏图片 + 下半屏文字 ----- */
+.imm-card {
+  flex: 1;                     /* 占满手机框剩余高度 */
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+/* 上半部分：封面大图（占屏幕一半以上） */
+.imm-media {
+  position: relative;
+  flex: 1 1 58%;               /* 约占 58% 高度，即"上半屏" */
+  min-height: 0;
+  background: linear-gradient(135deg, #fce7f3, #dbeafe);  /* 没图时的底色 */
+  overflow: hidden;
+}
+
+.imm-media img {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;           /* 图片按比例铺满，不会被拉变形 */
+  display: block;
+}
+
+/* 没有封面图时的占位（🖼️ 图标），默认显示；有图时被图片盖住 */
+.imm-fallback {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 64px;
+}
+
+/* 图片底部压一层暗色渐变，让叠在上面的文字更清楚 */
+.imm-media::after {
+  content: "";
+  position: absolute;
+  left: 0; right: 0; bottom: 0;
+  height: 45%;
+  background: linear-gradient(to top, rgba(15, 23, 42, 0.6), transparent);
+}
+
+/* 分类小徽章（浮在封面左下角） */
+.imm-badge {
+  position: absolute;
+  left: 16px;
+  bottom: 14px;
+  z-index: 2;
+  color: #fff;
+  font-size: 12px;
+  font-weight: 700;
+  padding: 5px 12px;
+  border-radius: 999px;
+  background: rgba(79, 70, 229, 0.9);
+}
+
+/* 下半部分：标题 + 摘要 + 来源时间 + 原文按钮 */
+.imm-info {
+  flex: 0 0 42%;               /* 约占 42% 高度 */
+  background: #fff;
+  padding: 16px 18px 18px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  min-height: 0;
+}
+
+.imm-title {
+  font-size: 21px;             /* 大字号标题 */
+  font-weight: 800;
+  line-height: 1.35;
+  color: var(--ink);
+  /* 标题最多 4 行，超出的省略：防止超长标题把摘要和按钮挤没了 */
+  display: -webkit-box;
+  -webkit-line-clamp: 4;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+.imm-summary {
+  font-size: 14px;
+  line-height: 1.7;
+  color: var(--ink-light);
+  flex: 1;                     /* 占满中间剩余空间 */
+  min-height: 0;
+  overflow-y: auto;            /* 摘要太长时可单独滚动，不撑破卡片 */
+}
+
+.imm-meta {
+  font-size: 12px;
+  color: #94a3b8;
+  display: flex;
+  gap: 12px;
+}
+
+/* 底部"打开原文"按钮 */
+.imm-open {
+  display: block;
+  text-align: center;
+  padding: 14px;
+  font-size: 16px;
+  font-weight: 700;
+  color: #fff;
+  text-decoration: none;
+  background: linear-gradient(135deg, #6366f1, #4f46e5);
+  border-radius: 14px;
+  box-shadow: 0 6px 18px rgba(79, 70, 229, 0.35);
+}
+
+.imm-open:hover { filter: brightness(1.08); }
+
+/* 卡片里"暂无新闻"的提示 */
+.imm-empty-card {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: #cbd5e1;
+  font-size: 15px;
+  text-align: center;
+  padding: 0 24px;
+}
+
+/* 阶段 1 的临时预览按钮（阶段 4 会换成正式开关） */
+.btn-preview-imm {
+  margin-top: 12px;
+  padding: 10px 22px;
+  font-size: 14px;
+  color: var(--accent);
+  background: rgba(255, 255, 255, 0.85);
+  border: 1px solid #c7d2fe;
+  border-radius: 12px;
+  cursor: pointer;
+}
+
+.btn-preview-imm:hover { background: #eef2ff; }
+
 /* 隐藏工具类：JS 通过加减这个类来显示/隐藏元素 */
 .hidden { display: none !important; }
 
@@ -387,4 +593,18 @@ footer {
   .category { padding: 24px 22px; }
   .news-item { padding: 16px; }
   .news-item a { font-size: 16px; }
+  /* 沉浸浏览：电脑上标题再大一点 */
+  .imm-title { font-size: 23px; }
+}
+
+/* ===== 手机端（宽度 < 600px）：沉浸浏览直接铺满整屏 ===== */
+@media (max-width: 599px) {
+  .immersive { padding: 0; }
+  .imm-stage {
+    width: 100%;
+    height: 100%;
+    border-radius: 0;          /* 整屏时不需要圆角 */
+  }
+  .imm-title { font-size: 19px; }
+  .imm-info { padding: 14px 16px 16px; }
 }

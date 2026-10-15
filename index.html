@@ -15,6 +15,13 @@
     <h1>每日新闻简报</h1>
     <p class="date" id="dateText"></p>
     <button class="btn-generate" id="btnGenerate">生成今日简报</button>
+
+    <!-- 阶段 1 的临时入口按钮：仅用于验收沉浸浏览卡片布局，
+         阶段 4 会把它替换成正式的「沉浸/列表」切换开关。
+         生成简报前它默认隐藏（见 CSS 的 .hidden） -->
+    <button class="btn-preview-imm hidden" id="btnPreviewImm">
+      🧪 阶段1预览：进入沉浸浏览
+    </button>
   </header>
 
   <!-- ===== 加载中提示（默认隐藏） ===== -->
@@ -83,6 +90,30 @@
   </section>
 
   <footer>数据来自公开 RSS 源，仅供个人学习使用</footer>
+</div>
+
+<!-- ============================================================
+     沉浸浏览视图（抖音式竖屏全屏卡片）
+     阶段 1：只做「卡片布局」，默认隐藏。
+     阶段 2 会加上下翻页、阶段 4 会加正式的视图切换开关。
+     结构说明：
+       .immersive   → 铺满整个屏幕的灰色遮罩层
+       .imm-stage   → 中间的竖屏"手机框"（电脑上是居中卡片，手机上就是整屏）
+       .imm-card    → 单条新闻的卡片内容，由 js/app.js 填充
+     ============================================================ -->
+<div class="immersive hidden" id="immersiveView">
+  <div class="imm-stage">
+
+    <!-- 顶部小条：左边显示"第 N / M 条"，右边是退出按钮 -->
+    <div class="imm-topbar">
+      <span class="imm-counter" id="immCounter">第 1 / 1 条</span>
+      <button class="imm-close" id="immClose" title="退出沉浸浏览">✕</button>
+    </div>
+
+    <!-- 卡片内容（标题、封面、摘要、按钮）由 js/app.js 动态填充 -->
+    <div class="imm-card" id="immCard"></div>
+
+  </div>
 </div>
 
 <!-- 脚本按依赖顺序引入：先配置，再工具，再统计，最后主逻辑 -->
