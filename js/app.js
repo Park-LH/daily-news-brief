@@ -15,6 +15,19 @@
 const $ = id => document.getElementById(id);
 
 /**
+ * 在页面底部弹出一句中文提示，2.5 秒后自动消失
+ * 用途：比如"没有新闻时不允许进入沉浸浏览"这类需要提醒的情况
+ */
+let toastTimer = null;
+function showToast(msg) {
+  const toast = $("toast");
+  if (!toast) return;
+  toast.textContent = msg;
+  toast.classList.remove("hidden");
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => toast.classList.add("hidden"), 2500);
+}
+/**
  * 只放行 http / https 的链接
  *
  * 为什么需要：新闻的链接和图片地址都来自外部 RSS 源，
@@ -264,9 +277,12 @@ $("immCard").addEventListener("click", e => {
 
 /* ---------- 阶段 2：上下翻页 ---------- */
 
-// 翻页锁：鼠标滚轮一滚会连续触发几十次事件，
-// 用它限制成"一次滚动只翻一条"，避免唰地跳到最后一条
-let immLock = false;
+// 滚轮"静默检测"用的参数（单位：毫秒）
+// 触控板一次慢速长滑会在 0.5 秒里连发几十个 wheel 事件。
+// 以前用"翻完锁 320 毫秒"的死办法，锁一过就可能再翻一条，
+// 结果滑一次翻了两条。现在改成：只要还在滚就一直不解锁，
+// 必须等滚动真正停下 WHEEL_IDLE_MS 毫秒，才允许下一次翻页。
+const WHEEL_IDLE_MS = 120;
 
 /**
  * 跳到指定的一条新闻，并播放滑入动画
@@ -287,13 +303,14 @@ function goToImm(index, direction) {
 }
 
 /**
- * 翻页（供滚轮和方向键调用）
+ * 翻页（供滚轮、方向键、手指滑动调用）
  * @param {number} delta 1 = 下一条，-1 = 上一条
  */
 function stepImm(delta) {
-  if (immLock || !latestNews.length) return;
-  immLock = true;
-  setTimeout(() => { immLock = false; }, 320);   // 320 毫秒内不重复翻页
+  // 一条新闻都没有时直接忽略：
+  // 下面 goToImm 里有 "取模" 运算（immIndex + total) % total，
+  // total 为 0 时会算出 NaN，页面就会显示空白卡片。这里先把门看住。
+  if (!latestNews.length) return;
   goToImm(immIndex + delta, delta > 0 ? "up" : "down");
 }
 
@@ -317,6 +334,20 @@ function saveView(mode) {
 function setView(mode) {
   const isImmersive = mode === "immersive";
 
+  // 边界情况：一条新闻都没有（比如所有 RSS 源都抓取失败）时禁止进入沉浸浏览。
+  // 原因：计数会变成"第 1 / 0 条"，翻页的取模 (index + 0) % 0 会算出 NaN，
+  // 卡片会变成空白。这里拦下来并给出中文提示，同时留在列表视图。
+  if (isImmersive && !latestNews.length) {
+    showToast("今日暂无新闻，请稍后重试");
+    // 无论当时在哪个视图，都退回列表视图：
+    // 万一已经在沉浸浏览里（新闻被清空的情况），也要安全退出来
+    $("immersiveView").classList.add("hidden");
+    document.body.style.overflow = "";
+    $("btnViewList").classList.add("active");
+    $("btnViewImmersive").classList.remove("active");
+    return;
+  }
+
   if (isImmersive) renderImmersiveCard();
 
   $("immersiveView").classList.toggle("hidden", !isImmersive);
@@ -326,7 +357,8 @@ function setView(mode) {
   $("btnViewList").classList.toggle("active", !isImmersive);
   $("btnViewImmersive").classList.toggle("active", isImmersive);
 
-  // 打开沉浸浏览时重新播放"操作提示"（几秒后自动淡出）
+  // 打开沉浸浏览时重新播放"操作提示"
+  // 时长：显示 3 秒后淡出（动画总时长 4 秒），与 style.css 的 hintFade 一致
   // 注意：.show 必须加在里面的 <span> 上，CSS 里动画是 .imm-hint span.show，
   // 以前加在外层 div 上，提示根本不显示（已修正）
   if (isImmersive) {
@@ -334,7 +366,7 @@ function setView(mode) {
     if (hint) {
       const hintText = hint.querySelector("span") || hint;
       hintText.classList.remove("show");
-      void hint.offsetWidth;          // 强制重排，让动画能重新播放
+      void hintText.offsetWidth;      // 强制重排，让动画能重新播放
       hintText.classList.add("show");
     }
   }
@@ -379,6 +411,25 @@ function scrollableTextUnder(target) {
 
 // ---- 鼠标滚轮翻页（电脑用）----
 // 向下滚 = 看下一条，向上滚 = 看上一条
+// wheelCanFlip：现在允不允许翻页；一次滚动手势里只允许翻一次
+let wheelCanFlip = true;
+let wheelIdleTimer = null;
+
+/**
+ * 处理一次滚轮翻页：能翻就翻，翻完上锁；
+ * 之后每来一个 wheel 事件都把解锁定时器往后推，
+ * 只有滚动真正停下（间隔超过 WHEEL_IDLE_MS）才重新解锁。
+ */
+function wheelFlip(delta) {
+  if (wheelCanFlip) {
+    wheelCanFlip = false;      // 翻完立刻上锁
+    stepImm(delta);
+  }
+  // 注意：无论上面有没有翻页，都要重置定时器——这正是"静默检测"的关键
+  clearTimeout(wheelIdleTimer);
+  wheelIdleTimer = setTimeout(() => { wheelCanFlip = true; }, WHEEL_IDLE_MS);
+}
+
 $("immersiveView").addEventListener("wheel", e => {
   // 注意顺序：必须先判断"是不是在滚文字"，再决定要不要 preventDefault。
   // 之前是先 preventDefault 再判断，结果在摘要/摘抄里滚动被浏览器拦掉了，
@@ -386,7 +437,7 @@ $("immersiveView").addEventListener("wheel", e => {
   if (scrollableTextUnder(e.target)) return;   // 让文字区正常滚动
 
   e.preventDefault();                 // 阻止页面背景跟着滚动
-  stepImm(e.deltaY > 0 ? 1 : -1);
+  wheelFlip(e.deltaY > 0 ? 1 : -1);
 }, { passive: false });
 
 /* ---------- 阶段 3：手机手指上下滑动翻页 ---------- */
@@ -451,13 +502,19 @@ document.addEventListener("keydown", e => {
   }
   if (!isOpen) return;                 // 没打开沉浸浏览时，方向键保持页面默认行为
 
+  // 先判断是不是翻页键，不是就交还给浏览器（不拦任何默认行为）
+  let delta = 0;
   if (e.key === "ArrowDown" || e.key === "PageDown") {
-    e.preventDefault();
-    stepImm(1);                        // ↓ 看下一条
+    delta = 1;                         // ↓ / PageDown = 看下一条
   } else if (e.key === "ArrowUp" || e.key === "PageUp") {
-    e.preventDefault();
-    stepImm(-1);                       // ↑ 看上一条
+    delta = -1;                        // ↑ / PageUp   = 看上一条
+  } else {
+    return;
   }
+
+  // 关键：拦住浏览器自己的滚动，避免"卡片翻页"和"页面滚动"同时发生（双动）
+  e.preventDefault();
+  stepImm(delta);
 });
 
 /**

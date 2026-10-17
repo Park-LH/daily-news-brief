@@ -111,7 +111,8 @@
       <button class="imm-close" id="immClose" title="退出沉浸浏览">✕</button>
     </div>
 
-    <!-- 打开后短暂显示的操作提示（几秒后自动淡出，纯提示不影响操作） -->
+    <!-- 打开后短暂显示的操作提示：显示 3 秒后淡出（动画总时长 4 秒，
+         具体时长定义在 style.css 的 @keyframes hintFade，两边保持一致） -->
     <div class="imm-hint" id="immHint">
       <span>滚轮 / ↑ ↓ 切换 · 到最后一条自动回到第一条</span>
     </div>
@@ -124,6 +125,9 @@
 
   </div>
 </div>
+
+<!-- 底部中文提示条（默认隐藏）：用于"今日暂无新闻，请稍后重试"这类提示 -->
+<div class="toast hidden" id="toast"></div>
 
 <!-- 脚本按依赖顺序引入：先工具，再配置，再统计，最后主逻辑
      summarize.js 必须放在 config.js 前面，因为配置里的摘要功能要用到它 -->
