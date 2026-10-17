@@ -410,6 +410,8 @@ footer {
   box-shadow: 0 24px 60px rgba(0, 0, 0, 0.35);
   display: flex;
   flex-direction: column;
+  /* 手机上滑到头时不要把整个页面带得"橡皮筋回弹"，体验更像原生 App */
+  overscroll-behavior: contain;
 }
 
 /* ----- 顶部小条：条数指示 + 退出按钮 ----- */
@@ -443,6 +445,23 @@ footer {
 
 .imm-close:hover { background: rgba(0, 0, 0, 0.55); }
 
+/* 底部进度条：显示"看到第几条了" */
+.imm-progress {
+  position: absolute;
+  left: 0; right: 0; bottom: 0;
+  z-index: 3;
+  height: 3px;
+  background: rgba(255, 255, 255, 0.18);
+}
+
+.imm-progress span {
+  display: block;
+  height: 100%;
+  width: 0;                      /* 具体宽度由 js/app.js 计算后填进来 */
+  background: linear-gradient(90deg, #818cf8, #4f46e5);
+  transition: width 0.25s ease;
+}
+
 /* ----- 单条新闻卡片：上半屏图片 + 下半屏文字 ----- */
 .imm-card {
   flex: 1;                     /* 占满手机框剩余高度 */
@@ -454,7 +473,7 @@ footer {
 /* 上半部分：封面大图（占屏幕一半以上） */
 .imm-media {
   position: relative;
-  flex: 1 1 58%;               /* 约占 58% 高度，即"上半屏" */
+  flex: 1 1 54%;               /* 约占 54% 高度，即"上半屏" */
   min-height: 0;
   background: linear-gradient(135deg, #fce7f3, #dbeafe);  /* 没图时的底色 */
   overflow: hidden;
@@ -502,9 +521,9 @@ footer {
   background: rgba(79, 70, 229, 0.9);
 }
 
-/* 下半部分：标题 + 摘要 + 来源时间 + 原文按钮 */
+/* 下半部分：标题 + 摘要 + 来源时间 + 两个按钮 */
 .imm-info {
-  flex: 0 0 42%;               /* 约占 42% 高度 */
+  flex: 0 0 46%;               /* 约占 46% 高度（比原来多一点，给加大后的文字留空间） */
   background: #fff;
   padding: 16px 18px 18px;
   display: flex;
@@ -514,7 +533,7 @@ footer {
 }
 
 .imm-title {
-  font-size: 21px;             /* 大字号标题 */
+  font-size: 26px;             /* 大字号标题（原 21px，按需求加大） */
   font-weight: 800;
   line-height: 1.35;
   color: var(--ink);
@@ -526,24 +545,50 @@ footer {
 }
 
 .imm-summary {
-  font-size: 14px;
-  line-height: 1.7;
-  color: var(--ink-light);
+  font-size: 17px;             /* 摘要字号加大（原 14px），更像抖音大字幕 */
+  line-height: 1.8;            /* 行距加大，长句更好读 */
+  color: #334155;              /* 比原来深一点，配合大字号更清晰 */
   flex: 1;                     /* 占满中间剩余空间 */
   min-height: 0;
   overflow-y: auto;            /* 摘要太长时可单独滚动，不撑破卡片 */
 }
 
 .imm-meta {
-  font-size: 12px;
+  font-size: 13px;
   color: #94a3b8;
   display: flex;
   gap: 12px;
 }
 
-/* 底部"打开原文"按钮 */
+/* ===== 底部两个按钮：摘抄正文 + 打开原文 ===== */
+.imm-actions {
+  display: flex;
+  gap: 10px;
+  align-items: stretch;
+}
+
+/* 次要按钮：摘抄正文 */
+.imm-btn-sub {
+  flex: 1;
+  padding: 14px 10px;
+  font-size: 15px;
+  font-weight: 700;
+  color: var(--accent-dark);
+  background: #eef2ff;
+  border: 1px solid #c7d2fe;
+  border-radius: 14px;
+  cursor: pointer;
+  transition: background 0.15s ease;
+}
+
+.imm-btn-sub:hover { background: #e0e7ff; }
+
+/* 主要按钮：打开原文 */
 .imm-open {
-  display: block;
+  flex: 1.2;                   /* 比摘抄按钮略宽一点，突出主操作 */
+  display: flex;
+  align-items: center;
+  justify-content: center;
   text-align: center;
   padding: 14px;
   font-size: 16px;
@@ -556,6 +601,94 @@ footer {
 }
 
 .imm-open:hover { filter: brightness(1.08); }
+
+/* ============================================================
+   「摘抄模式」：点「📄 摘抄正文」后加到卡片上
+   目的：让摘抄区域拿到最大高度
+   做法：封面图整块收起 → 文字区铺满整屏 → 摘抄区吃掉剩余全部空间
+   ============================================================ */
+
+/* 封面图：摘抄时完全隐藏，把空间全让给文字 */
+.imm-card.excerpt-open .imm-media { display: none; }
+
+/* 文字区：铺满整张卡片 */
+.imm-card.excerpt-open .imm-info {
+  flex: 1 1 100%;
+  gap: 8px;
+}
+
+/* 标题缩小成一行"页眉"，不再占大块地方 */
+.imm-card.excerpt-open .imm-title {
+  font-size: 16px;
+  font-weight: 700;
+  line-height: 1.4;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;      /* 最多两行 */
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+/* 来源时间：摘抄时隐藏，省出高度 */
+.imm-card.excerpt-open .imm-meta { display: none; }
+
+/* 摘抄面板：吃掉所有剩余空间，字号也放大一点更好读 */
+.imm-card.excerpt-open .imm-excerpt {
+  flex: 1;
+  min-height: 0;
+  font-size: 16px;
+}
+
+.imm-card.excerpt-open .imm-excerpt li {
+  font-size: 16px;
+  line-height: 1.85;
+  margin-bottom: 10px;
+}
+
+/* 摘抄模式下按钮变矮一点，给正文再多留一点地方 */
+.imm-card.excerpt-open .imm-btn-sub,
+.imm-card.excerpt-open .imm-open {
+  padding: 11px 8px;
+  font-size: 14px;
+}
+
+/* ===== 摘抄正文面板（点"摘抄正文"后展开） ===== */
+.imm-excerpt {
+  flex: 1;                     /* 占满中间剩余空间 */
+  min-height: 0;
+  overflow-y: auto;            /* 要点多时可滚动 */
+  background: #f8fafc;
+  border: 1px solid #e2e8f0;
+  border-radius: 12px;
+  padding: 12px 14px;
+}
+
+.imm-excerpt-title {
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--accent);
+  margin-bottom: 8px;
+}
+
+.imm-excerpt ul {
+  padding-left: 18px;          /* 让圆点序号显示出来 */
+  margin: 0;
+}
+
+.imm-excerpt li {
+  font-size: 15px;
+  line-height: 1.75;
+  color: #334155;
+  margin-bottom: 8px;
+}
+
+.imm-excerpt li:last-child { margin-bottom: 0; }
+
+/* 源没提供正文时的提示文字 */
+.imm-excerpt-empty {
+  font-size: 14px;
+  line-height: 1.7;
+  color: var(--ink-light);
+}
 
 /* 卡片里"暂无新闻"的提示 */
 .imm-empty-card {
@@ -615,19 +748,38 @@ footer {
   100% { opacity: 0; }
 }
 
-/* 阶段 1 的临时预览按钮（阶段 4 会换成正式开关） */
-.btn-preview-imm {
-  margin-top: 12px;
-  padding: 10px 22px;
-  font-size: 14px;
-  color: var(--accent);
-  background: rgba(255, 255, 255, 0.85);
-  border: 1px solid #c7d2fe;
-  border-radius: 12px;
-  cursor: pointer;
+/* ===== 视图切换开关（阶段 4）：列表浏览 ⇄ 沉浸浏览 ===== */
+.view-switch {
+  margin-top: 14px;
+  display: inline-flex;
+  gap: 4px;
+  padding: 4px;
+  background: rgba(255, 255, 255, 0.9);
+  border: 1px solid #e0e7ff;
+  border-radius: 14px;
+  box-shadow: 0 4px 14px rgba(79, 70, 229, 0.12);
 }
 
-.btn-preview-imm:hover { background: #eef2ff; }
+.vs-btn {
+  padding: 9px 18px;
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--ink-light);
+  background: transparent;
+  border: none;
+  border-radius: 10px;
+  cursor: pointer;
+  transition: background 0.18s, color 0.18s;
+}
+
+.vs-btn:hover { background: #eef2ff; }
+
+/* 当前选中的那个按钮：填充主题色 */
+.vs-btn.active {
+  color: #fff;
+  background: linear-gradient(135deg, #6366f1, #4f46e5);
+  box-shadow: 0 4px 12px rgba(79, 70, 229, 0.35);
+}
 
 /* 隐藏工具类：JS 通过加减这个类来显示/隐藏元素 */
 .hidden { display: none !important; }
@@ -640,7 +792,8 @@ footer {
   .news-item { padding: 16px; }
   .news-item a { font-size: 16px; }
   /* 沉浸浏览：电脑上标题再大一点 */
-  .imm-title { font-size: 23px; }
+  .imm-title { font-size: 28px; }
+  .imm-summary { font-size: 18px; }
 }
 
 /* ===== 手机端（宽度 < 600px）：沉浸浏览直接铺满整屏 ===== */
@@ -651,6 +804,9 @@ footer {
     height: 100%;
     border-radius: 0;          /* 整屏时不需要圆角 */
   }
-  .imm-title { font-size: 19px; }
+  /* 手机屏幕窄，字号比电脑小一点，但仍比原来的大 */
+  .imm-title { font-size: 22px; }
+  .imm-summary { font-size: 16px; }
   .imm-info { padding: 14px 16px 16px; }
+  .imm-btn-sub, .imm-open { font-size: 14px; padding: 12px 8px; }
 }

@@ -38,7 +38,13 @@ async function recordTodayStats(tech, fin, life) {
   const value = { "科技": tech, "财经": fin, "生活": life, total: tech + fin + life };
 
   // 1. 本地兜底：无论如何先写 localStorage
-  localStorage.setItem("news-stats-" + key, JSON.stringify(value));
+  //    加 try 是因为某些浏览器（无痕模式、禁用存储）写 localStorage 会直接抛错，
+  //    那样会把整个生成流程打断，所以这里失败就算了，不该影响看新闻
+  try {
+    localStorage.setItem("news-stats-" + key, JSON.stringify(value));
+  } catch (e) {
+    console.warn("本地统计写入失败（可能是浏览器禁用了存储），已跳过");
+  }
 
   // 2. 后端：只在页面通过 http:// 打开时才尝试
   //    （file:// 方式没有服务器，fetch 相对路径必然失败，直接跳过）
@@ -83,8 +89,18 @@ async function loadStatsDays(n) {
     if (remote && remote[key]) {
       data = remote[key];
     } else {
+      // 本地存的可能是坏数据（被手改过、写入中断等）。
+      // 以前直接 JSON.parse，一坏就抛错，会让整个"生成简报"流程中断，
+      // 页面显示"出现意外错误"。这里改成解析失败就当这天没数据。
       const saved = localStorage.getItem("news-stats-" + key);
-      if (saved) data = JSON.parse(saved);
+      if (saved) {
+        try {
+          const parsed = JSON.parse(saved);
+          if (parsed && typeof parsed === "object") data = parsed;
+        } catch (e) {
+          console.warn("统计数据损坏，已忽略该天记录：" + key);
+        }
+      }
     }
 
     days.push({
@@ -118,7 +134,9 @@ async function renderStats() {
     const fin = days.reduce((s, d) => s + d.fin, 0);
     const life = days.reduce((s, d) => s + d.life, 0);
     const total = tech + fin + life;
-    const avg = (total / STATS_DAYS).toFixed(1);
+    // 日均应该按"真正有记录的天数"算，而不是固定的 7 天
+    // （才用 2 天时，除以 7 会把日均算得偏低，看着像坏了）
+    const avg = (total / recordedDays).toFixed(1);
     summary.textContent = `近 ${STATS_DAYS} 天共 ${total} 条 · 日均 ${avg} 条 · 科技 ${tech} / 财经 ${fin} / 生活 ${life}`;
   }
 

@@ -14,6 +14,23 @@
 // 小工具：按 id 获取页面元素
 const $ = id => document.getElementById(id);
 
+/**
+ * 只放行 http / https 的链接
+ *
+ * 为什么需要：新闻的链接和图片地址都来自外部 RSS 源，
+ * 万一源里混进 javascript: 这类地址，直接放进 href / src 一点就会执行脚本。
+ * 这里统一过滤：不安全的地址一律返回 ""（页面就不显示它了）。
+ * （escapeHtml 在 js/summarize.js 里定义，负责把 < > 这类符号变成普通文字）
+ */
+function safeUrl(url) {
+  try {
+    const u = new URL(String(url || ""), location.href);
+    return (u.protocol === "http:" || u.protocol === "https:") ? u.href : "";
+  } catch (e) {
+    return "";         // 地址本身不合法，当作没有
+  }
+}
+
 // ---- 沉浸浏览（阶段 1）用到的两个全局变量 ----
 // latestNews：本次生成的新闻列表，沉浸浏览要按顺序一张张显示
 // immIndex：当前显示的是第几条（从 0 开始数）
@@ -59,23 +76,30 @@ function renderCategory(category, newsList) {
     return;
   }
 
-  list.innerHTML = newsList.map(news => `
+  list.innerHTML = newsList.map(news => {
+    // 重要：标题、摘要、来源都是外部 RSS 给的文本，
+    // 必须先转义再插入页面，否则里面带 < > 会破坏页面结构，
+    // 带脚本更会被浏览器直接执行（这是之前漏掉的一个安全隐患）
+    const img = safeUrl(news.image);
+    const link = safeUrl(news.link);
+    return `
     <article class="news-item">
-      ${news.image
-        ? `<img class="news-thumb" src="${news.image}" alt="新闻配图"
+      ${img
+        ? `<img class="news-thumb" src="${escapeHtml(img)}" alt="新闻配图"
              loading="lazy"
              onerror="this.outerHTML='<div class=\\'news-thumb news-thumb-fallback\\'>🖼️</div>'">`
         : `<div class="news-thumb news-thumb-fallback">🖼️</div>`}
       <div class="news-body">
-        <a href="${news.link}" target="_blank" rel="noopener">${news.title}</a>
-        <div class="summary">${news.summary || "（这条新闻没有自带摘要，点击标题查看原文）"}</div>
+        <a href="${escapeHtml(link)}" target="_blank" rel="noopener">${escapeHtml(news.title)}</a>
+        <div class="summary">${escapeHtml(news.summary || "（这条新闻没有自带摘要，点击标题查看原文）")}</div>
         <div class="meta">
-          <span>来源：${news.source}</span>
-          ${news.time ? `<span>${news.time}</span>` : ""}
+          <span>来源：${escapeHtml(news.source)}</span>
+          ${news.time ? `<span>${escapeHtml(news.time)}</span>` : ""}
         </div>
       </div>
     </article>
-  `).join("");
+  `;
+  }).join("");
 }
 
 /* ============================================================
@@ -85,10 +109,44 @@ function renderCategory(category, newsList) {
    ============================================================ */
 
 /**
+ * 组装「沉浸浏览」要看的新闻列表
+ *
+ * 做法：按 科技 → 财经 → 生活 的顺序，每个专题各取最多
+ * IMMERSIVE_MAX_PER_CATEGORY 条，再依次拼起来。
+ * 这样三个专题都能刷到，不会出现"只剩一个专题"的情况。
+ *
+ * @param {Array} sortedNews 已经按时间从新到旧排好序的新闻数组
+ * @returns {Array} 沉浸浏览要显示的列表
+ */
+function buildImmersiveList(sortedNews) {
+  const CATEGORY_ORDER = ["科技", "财经", "生活"];   // 沉浸浏览里的专题顺序
+  const list = [];
+
+  for (const category of CATEGORY_ORDER) {
+    const items = sortedNews
+      .filter(news => news.category === category)
+      .slice(0, IMMERSIVE_MAX_PER_CATEGORY);
+    list.push(...items);
+  }
+
+  // 打印每个专题各进了几条，方便核对（浏览器 F12 → Console 可见）
+  const counts = CATEGORY_ORDER
+    .map(c => `${c} ${list.filter(n => n.category === c).length} 条`)
+    .join(" / ");
+  console.log(`[沉浸浏览] 共 ${list.length} 条 —— ${counts}`);
+
+  return list;
+}
+
+/**
  * 把当前这条新闻（latestNews[immIndex]）画成一张全屏卡片
  */
 function renderImmersiveCard() {
   const card = $("immCard");
+
+  // 翻页会重建卡片内容，所以这里先取消"摘抄最大化"状态，
+  // 否则摘抄展开着翻页，新卡片会沿用一个不合适的布局
+  card.classList.remove("excerpt-open");
 
   // 还没生成新闻：显示一句提示，避免空白
   if (!latestNews.length) {
@@ -99,38 +157,110 @@ function renderImmersiveCard() {
 
   const news = latestNews[immIndex];
 
-  // 顶部显示"第 N / M 条"
-  $("immCounter").textContent = `第 ${immIndex + 1} / ${latestNews.length} 条`;
+  // 顶部显示"专题 · 第 N / M 条"，一眼知道在看哪个专题、第几条
+  $("immCounter").textContent =
+    `${news.category} · 第 ${immIndex + 1} / ${latestNews.length} 条`;
+
+  // 底部进度条：宽度按"第几条 / 共几条"算
+  $("immProgress").style.width =
+    ((immIndex + 1) / latestNews.length * 100).toFixed(2) + "%";
 
   // 分类徽章的颜色：科技蓝、财经橙、生活粉
   const badgeColors = { 科技: "#3b82f6", 财经: "#f59e0b", 生活: "#ec4899" };
   const badgeColor = badgeColors[news.category] || "#4f46e5";
 
+  // 图片地址同样要先过滤，只放行 http/https（见 safeUrl 的说明）
+  const cover = safeUrl(news.image);
+  const link = safeUrl(news.link);
+
   card.innerHTML = `
     <!-- 上半屏：封面大图；加载失败或无图时显示 🖼️ 占位 -->
     <div class="imm-media">
       <div class="imm-fallback">🖼️</div>
-      ${news.image
-        ? `<img src="${news.image}" alt="新闻封面"
+      ${cover
+        ? `<img src="${escapeHtml(cover)}" alt="新闻封面"
              onerror="this.remove()">`   // 图片打不开就把自己删掉，露出占位图标
         : ""}
-      <span class="imm-badge" style="background:${badgeColor}">${news.category}</span>
+      <span class="imm-badge" style="background:${badgeColor}">${escapeHtml(news.category)}</span>
     </div>
 
-    <!-- 下半屏：标题 + 摘要 + 来源时间 + 打开原文按钮 -->
+    <!-- 下半屏：标题（大字号）+ 自动摘要（大字号）+ 来源时间 + 两个按钮 -->
     <div class="imm-info">
-      <h3 class="imm-title">${news.title}</h3>
-      <p class="imm-summary">${news.summary || "（这条新闻没有自带摘要，点下方按钮查看原文）"}</p>
+      <h3 class="imm-title">${escapeHtml(news.title)}</h3>
+
+      <!-- 自动总结出来的一句话摘要 -->
+      <p class="imm-summary" id="immSummary">${
+        escapeHtml(news.summary || "（这条新闻没有自带摘要，点下方按钮查看原文）")
+      }</p>
+
+      <!-- 「摘抄正文」展开后显示在这里，默认隐藏 -->
+      <div class="imm-excerpt hidden" id="immExcerpt"></div>
+
       <div class="imm-meta">
-        <span>来源：${news.source}</span>
+        <span>来源：${escapeHtml(news.source)}</span>
         ${news.time ? `<span>${news.time}</span>` : ""}
       </div>
-      <a class="imm-open" href="${news.link}" target="_blank" rel="noopener">
-        打开原文 ↗
-      </a>
+
+      <!-- 两个独立按钮：左边摘抄正文，右边打开原文 -->
+      <div class="imm-actions">
+        <button class="imm-btn-sub" id="immExcerptBtn">📄 摘抄正文</button>
+        <a class="imm-open" href="${escapeHtml(link)}" target="_blank" rel="noopener">
+          打开原文 ↗
+        </a>
+      </div>
     </div>
   `;
 }
+
+/**
+ * 展开 / 收起「正文摘抄」
+ * 从这条新闻的正文全文里挑出几条要点显示出来；
+ * 如果这个源没有提供正文，就退回用原始摘要，并提示可打开原文
+ */
+function toggleExcerpt() {
+  const news = latestNews[immIndex];
+  if (!news) return;
+
+  const panel = $("immExcerpt");
+  const summary = $("immSummary");
+  const btn = $("immExcerptBtn");
+  if (!panel || !summary || !btn) return;
+
+  const isHidden = panel.classList.contains("hidden");
+
+  if (isHidden) {
+    // ---- 展开：生成要点 ----
+    const source = news.content || news.rawSummary || "";
+    const points = extractKeyPoints(source, 4);
+
+    panel.innerHTML = points.length
+      ? `<div class="imm-excerpt-title">📌 ${escapeHtml(news.category)} · 正文要点（自动摘抄）</div>
+         <ul>${points.map(p => `<li>${escapeHtml(p)}</li>`).join("")}</ul>`
+      : `<div class="imm-excerpt-title">📌 ${escapeHtml(news.category)} · 正文要点</div>
+         <p class="imm-excerpt-empty">这个新闻源没有提供正文内容，
+         点右边「打开原文 ↗」可以看完整文章。</p>`;
+
+    panel.classList.remove("hidden");
+    summary.classList.add("hidden");   // 摘抄展开时先收起一句话摘要，省地方
+    btn.textContent = "收起摘抄 ✕";
+
+    // 关键：给卡片加上"摘抄模式"，CSS 会把封面图收起、文字区放满整屏，
+    // 摘抄区域因此拿到最大高度（见 style.css 的 .excerpt-open）
+    $("immCard").classList.add("excerpt-open");
+  } else {
+    // ---- 收起：恢复显示一句话摘要 ----
+    panel.classList.add("hidden");
+    summary.classList.remove("hidden");
+    btn.textContent = "📄 摘抄正文";
+    $("immCard").classList.remove("excerpt-open");
+  }
+}
+
+// 用事件委托绑定按钮：因为卡片每次翻页都会重新生成，
+// 直接绑在按钮上会失效，绑在不变的父容器 #immCard 上最稳
+$("immCard").addEventListener("click", e => {
+  if (e.target.closest("#immExcerptBtn")) toggleExcerpt();
+});
 
 /* ---------- 阶段 2：上下翻页 ---------- */
 
@@ -167,40 +297,149 @@ function stepImm(delta) {
   goToImm(immIndex + delta, delta > 0 ? "up" : "down");
 }
 
+// 记住用户上次选的浏览方式（"list"=列表，"immersive"=沉浸），下次打开自动沿用
+const VIEW_MODE_KEY = "news-view-mode";
+
+/** 读取上次的浏览方式，读不到就默认列表 */
+function getSavedView() {
+  try { return localStorage.getItem(VIEW_MODE_KEY) || "list"; } catch (e) { return "list"; }
+}
+
+/** 保存浏览方式（浏览器禁用存储时静默跳过，不影响使用） */
+function saveView(mode) {
+  try { localStorage.setItem(VIEW_MODE_KEY, mode); } catch (e) { /* 忽略 */ }
+}
+
+/**
+ * 切换浏览方式（阶段 4 的正式开关）
+ * @param {string} mode "list" = 列表浏览，"immersive" = 沉浸浏览
+ */
+function setView(mode) {
+  const isImmersive = mode === "immersive";
+
+  if (isImmersive) renderImmersiveCard();
+
+  $("immersiveView").classList.toggle("hidden", !isImmersive);
+  document.body.style.overflow = isImmersive ? "hidden" : "";  // 沉浸时锁住背景滚动
+
+  // 开关上的高亮跟着当前视图走
+  $("btnViewList").classList.toggle("active", !isImmersive);
+  $("btnViewImmersive").classList.toggle("active", isImmersive);
+
+  // 打开沉浸浏览时重新播放"操作提示"（几秒后自动淡出）
+  // 注意：.show 必须加在里面的 <span> 上，CSS 里动画是 .imm-hint span.show，
+  // 以前加在外层 div 上，提示根本不显示（已修正）
+  if (isImmersive) {
+    const hint = $("immHint");
+    if (hint) {
+      const hintText = hint.querySelector("span") || hint;
+      hintText.classList.remove("show");
+      void hint.offsetWidth;          // 强制重排，让动画能重新播放
+      hintText.classList.add("show");
+    }
+  }
+
+  saveView(mode);
+}
+
 /** 打开沉浸浏览 */
 function openImmersive() {
-  renderImmersiveCard();
-  $("immersiveView").classList.remove("hidden");
-  document.body.style.overflow = "hidden";   // 锁住背景滚动，只让卡片动
-
-  // 重新播放"操作提示"的淡出动画
-  const hint = $("immHint");
-  hint.classList.remove("show");
-  void hint.offsetWidth;
-  hint.classList.add("show");
+  setView("immersive");
 }
 
 /** 关闭沉浸浏览，回到列表 */
 function closeImmersive() {
-  $("immersiveView").classList.add("hidden");
-  document.body.style.overflow = "";         // 恢复背景滚动
+  setView("list");
 }
 
-// 阶段 1 的临时入口 + 退出按钮（阶段 4 会换成正式开关）
-$("btnPreviewImm").addEventListener("click", openImmersive);
-$("immClose").addEventListener("click", closeImmersive);
+// 正式开关的两个按钮 + 沉浸视图里的 ✕ 退出按钮
+$("btnViewList").addEventListener("click", () => setView("list"));
+$("btnViewImmersive").addEventListener("click", () => setView("immersive"));
+$("immClose").addEventListener("click", () => setView("list"));
+
+// 手机（有触摸屏）就把提示语换成"上滑/下滑"，电脑仍提示"滚轮/↑↓"
+// 只改 <span> 里的文字，不要把 span 本身换掉，否则动画就没了
+if ("ontouchstart" in window) {
+  const hintSpan = $("immHint") && $("immHint").querySelector("span");
+  if (hintSpan) hintSpan.textContent = "上滑看下一条 · 下滑看上一条 · 滑到最后自动回到第一条";
+}
+
+/**
+ * 找出鼠标/手指下面那个"可以滚动的文字区"（摘要或摘抄正文）
+ * 用途：在这类区域上滚动时应该滚文字，而不是翻到下一条新闻
+ * @param {EventTarget} target 事件的目标元素
+ * @returns {Element|null} 没找到、或内容还没超出（根本不用滚）时返回 null
+ */
+function scrollableTextUnder(target) {
+  const el = target && target.closest
+    ? target.closest(".imm-summary, .imm-excerpt")
+    : null;
+  return el && el.scrollHeight > el.clientHeight ? el : null;
+}
 
 // ---- 鼠标滚轮翻页（电脑用）----
 // 向下滚 = 看下一条，向上滚 = 看上一条
 $("immersiveView").addEventListener("wheel", e => {
+  // 注意顺序：必须先判断"是不是在滚文字"，再决定要不要 preventDefault。
+  // 之前是先 preventDefault 再判断，结果在摘要/摘抄里滚动被浏览器拦掉了，
+  // 长摘抄根本滚不动——这是个实打实的 BUG，已修正。
+  if (scrollableTextUnder(e.target)) return;   // 让文字区正常滚动
+
   e.preventDefault();                 // 阻止页面背景跟着滚动
-
-  // 例外：如果鼠标停在摘要文字上、且摘要内容超出可滚动，就让它正常滚文字
-  if (e.target.closest(".imm-summary")
-      && e.target.scrollHeight > e.target.clientHeight) return;
-
   stepImm(e.deltaY > 0 ? 1 : -1);
 }, { passive: false });
+
+/* ---------- 阶段 3：手机手指上下滑动翻页 ---------- */
+
+// 记录手指按下时的位置，用来判断滑动方向和距离
+let touchStartX = 0;
+let touchStartY = 0;
+let touchActive = false;   // 本次滑动是否由我们处理（否则不翻页）
+
+$("immersiveView").addEventListener("touchstart", e => {
+  if (e.touches.length !== 1) { touchActive = false; return; }
+  touchStartX = e.touches[0].clientX;
+  touchStartY = e.touches[0].clientY;
+  touchActive = false;
+}, { passive: true });
+
+$("immersiveView").addEventListener("touchmove", e => {
+  if (e.touches.length !== 1) return;
+  const dy = e.touches[0].clientY - touchStartY;
+  const dx = e.touches[0].clientX - touchStartX;
+
+  // 滑动距离太小、或者是横着滑的：不管（避免误触翻页）
+  if (Math.abs(dy) < 10 || Math.abs(dy) <= Math.abs(dx)) return;
+
+  // 手指落在可滚动的文字区里：让它正常滚文字
+  if (scrollableTextUnder(e.target)) return;
+
+  e.preventDefault();      // 拦住系统默认的页面滚动，改由我们翻页
+  touchActive = true;
+
+  // 跟手效果：手指移动时卡片跟着位移一点（0.45 是阻尼系数，手感更自然）
+  $("immCard").style.transform = `translateY(${dy * 0.45}px)`;
+}, { passive: false });
+
+$("immersiveView").addEventListener("touchend", e => {
+  // 松手先把位移复位（下一步要么翻页、要么弹回原位）
+  $("immCard").style.transform = "";
+
+  if (!touchActive) return;
+  touchActive = false;
+
+  const endY = e.changedTouches[0] ? e.changedTouches[0].clientY : touchStartY;
+  const dy = endY - touchStartY;
+
+  // 手指上滑（dy 为负）= 看下一条；下滑 = 看上一条。超过 45 像素才算一次翻页
+  if (Math.abs(dy) > 45) stepImm(dy < 0 ? 1 : -1);
+});
+
+// 手指滑动被中途取消（比如来电）：同样复位，避免卡片卡在偏移状态
+$("immersiveView").addEventListener("touchcancel", () => {
+  $("immCard").style.transform = "";
+  touchActive = false;
+});
 
 // ---- 键盘翻页 + ESC 退出 ----
 document.addEventListener("keydown", e => {
@@ -286,7 +525,14 @@ $("btnGenerate").addEventListener("click", async () => {
     const topNews = todayNews.slice(0, MAX_NEWS);
 
     // ---- 第 3 步：给每条新闻生成摘要（AI 预留接口，见 config.js）----
-    for (const news of topNews) {
+    // 这里遍历的是"今天全部新闻"而不是只前 10 条：
+    // 沉浸浏览每个专题各取几条，可能取到前 10 名之外的新闻，
+    // 如果只给前 10 条做总结，那些新闻就会显示又长又乱的原始摘要。
+    // 总结是本地计算、不联网，多算几条没有负担。
+    for (const news of todayNews) {
+      // 先把 RSS 原始摘要留一份底稿：万一这个源没提供正文，
+      // 「摘抄正文」还能用它兜底，不至于一片空白
+      news.rawSummary = news.summary;
       news.summary = await generateSummary(news.title, news.summary);
     }
 
@@ -299,10 +545,22 @@ $("btnGenerate").addEventListener("click", async () => {
     renderCategory("生活", lifeList);
 
     // ---- 阶段1：把这批新闻交给沉浸浏览，并显示临时预览按钮 ----
-    latestNews = topNews;      // 沉浸浏览按顺序显示这批新闻
+    // 注意：沉浸浏览用的是"每个专题各取几条"的列表（buildImmersiveList），
+    // 而不是列表页那个按时间取前 10 条的 topNews，
+    // 这样 科技/财经/生活 三个专题都会出现在沉浸浏览里
+    latestNews = buildImmersiveList(todayNews);
     immIndex = 0;              // 从第一条开始
     renderImmersiveCard();
-    $("btnPreviewImm").classList.remove("hidden");
+
+    // ---- 阶段4：显示视图切换开关 ----
+    // 如果上次用的是沉浸浏览、且这次确实有新闻，就自动进入沉浸视图，
+    // 否则回到列表视图（开关上的高亮也一并同步）
+    $("viewSwitch").classList.remove("hidden");
+    if (getSavedView() === "immersive" && latestNews.length) {
+      openImmersive();
+    } else {
+      setView("list");
+    }
 
     // ---- 第 5 步：记录今天的分类数据并渲染历史统计图 ----
     // （只有至少一个源连接成功才记录，避免把"全部失败"记成 0 条）

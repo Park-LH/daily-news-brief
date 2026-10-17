@@ -51,12 +51,20 @@ async function fetchRss(feedUrl) {
   }
 
   // 只保留我们需要的字段，顺便把 HTML 标签从摘要里清掉
-  return data.items.map(item => ({
+  // 注意：个别源即使返回 status=ok 也不带 items 字段，
+  // 以前直接 .map 会因为"读不到 items"报错，这里兜底成空数组
+  const items = Array.isArray(data.items) ? data.items : [];
+  return items.map(item => ({
     title: stripHtml(item.title),
     link: item.link,
     summary: stripHtml(item.description || item.summary || ""),
     pubDate: item.pubDate || "",
     image: extractImage(item),   // 新闻配图地址，可能是空字符串
+
+    // 正文全文（纯文字，最多 3000 字）
+    // 用途：沉浸浏览里的「摘抄正文」按钮要从全文里挑要点
+    // 只存 3000 字是为了省内存；有些源不提供正文，这里会是空字符串
+    content: stripHtml(item.content || "").slice(0, 3000),
   }));
 }
 
