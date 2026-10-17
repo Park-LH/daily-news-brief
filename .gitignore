@@ -8,3 +8,7 @@ Thumbs.db
 # 编辑器
 .vscode/
 .idea/
+
+# 本地服务器启动时重定向输出产生的临时文件（与代码无关）
+server-out.txt
+server-err.txt

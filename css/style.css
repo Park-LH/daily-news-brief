@@ -3,6 +3,20 @@
    采用"移动优先"写法：先写手机样式，再用 @media 写电脑样式
    ============================================================ */
 
+/* ============================================================
+   【z-index 层级规范】—— 新增元素一律按表取用，不要临时猜数字
+   ------------------------------------------------------------
+   1000  底图       背景、封面大图这类"最底下的图层"
+   1010  内容       压在底图之上的常规内容（分类徽章、占位图标等）
+   1020  提示条     常驻提示层：顶部条/退出按钮、操作提示、底部进度条
+   2000  遮罩与弹层 全屏遮罩（沉浸浏览）、页面级弹层（底部中文提示）
+   ------------------------------------------------------------
+   同层级内谁在上，由 DOM 顺序决定：写在后面的压住前面的。
+   例如 .toast 与 .immersive 同为 2000，但 .toast 在 HTML 里更靠后，
+   所以提示条永远盖在沉浸遮罩之上。
+   背景装饰（.mosaic 的 -1）不参与本表，它是最底层背景。
+   ============================================================ */
+
 * { margin: 0; padding: 0; box-sizing: border-box; }
 
 :root {
@@ -387,7 +401,9 @@ footer {
 .immersive {
   position: fixed;
   inset: 0;                    /* 上右下左都贴边 = 铺满屏幕 */
-  z-index: 100;                /* 层级要高，才能盖住下面的列表 */
+  height: 100dvh;              /* 手机用 dvh：iOS Safari 地址栏会吃掉一截，
+                                  用 100vh 卡片底部会被裁掉（见下方 vh 兜底） */
+  z-index: 2000;               /* 遮罩层，见顶部层级规范表 */
   display: flex;
   align-items: center;         /* 垂直居中 */
   justify-content: center;     /* 水平居中 */
@@ -395,6 +411,17 @@ footer {
   background: rgba(15, 23, 42, 0.55);
   backdrop-filter: blur(6px);
   -webkit-backdrop-filter: blur(6px);
+
+  /* 移动端必做的两件事（只加在这一层，别加在 body 上）：
+     1. overscroll-behavior: none —— 滑到边界时不把整个页面带着滚（橡皮筋）
+     2. touch-action: none        —— 由我们自己接管手指，系统不要抢手势 */
+  overscroll-behavior: none;
+  touch-action: none;
+}
+
+/* 老浏览器不认 dvh 时的兜底（顺序不能反：先写 vh，再写 dvh 覆盖） */
+@supports not (height: 100dvh) {
+  .immersive { height: 100vh; }
 }
 
 /* 中间的竖屏"手机框" */
@@ -410,15 +437,15 @@ footer {
   box-shadow: 0 24px 60px rgba(0, 0, 0, 0.35);
   display: flex;
   flex-direction: column;
-  /* 手机上滑到头时不要把整个页面带得"橡皮筋回弹"，体验更像原生 App */
-  overscroll-behavior: contain;
+  /* 注：overscroll-behavior / touch-action 只加在外层 .immersive 上，
+     这里不再重复，避免层级行为互相打架 */
 }
 
 /* ----- 顶部小条：条数指示 + 退出按钮 ----- */
 .imm-topbar {
   position: absolute;          /* 浮在卡片之上 */
   top: 0; left: 0; right: 0;
-  z-index: 3;
+  z-index: 1020;               /* 提示条层，见顶部层级规范表 */
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -449,7 +476,7 @@ footer {
 .imm-progress {
   position: absolute;
   left: 0; right: 0; bottom: 0;
-  z-index: 3;
+  z-index: 1020;               /* 提示条层，见顶部层级规范表 */
   height: 3px;
   background: rgba(255, 255, 255, 0.18);
 }
@@ -477,6 +504,7 @@ footer {
   min-height: 0;
   background: linear-gradient(135deg, #fce7f3, #dbeafe);  /* 没图时的底色 */
   overflow: hidden;
+  z-index: 1000;               /* 底图层，见顶部层级规范表 */
 }
 
 .imm-media img {
@@ -496,6 +524,16 @@ footer {
   align-items: center;
   justify-content: center;
   font-size: 64px;
+  z-index: 1000;               /* 底图层（与封面图同层，可被 img 覆盖） */
+}
+
+/* 摘要 / 摘抄这两个可滚动文字区
+   注意：外层 .immersive 设了 touch-action: none（防止橡皮筋），
+   浏览器就不让子元素自己滚了，所以这两个区域的滚动由 js/app.js 手动处理
+   （见 touchmove 里的 scrollTop 计算），这里只负责给滚动条留样式。 */
+.imm-summary,
+.imm-excerpt {
+  -webkit-overflow-scrolling: touch;   /* iOS 上滚动更顺滑 */
 }
 
 /* 图片底部压一层暗色渐变，让叠在上面的文字更清楚 */
@@ -512,7 +550,7 @@ footer {
   position: absolute;
   left: 16px;
   bottom: 14px;
-  z-index: 2;
+  z-index: 1010;               /* 内容层，见顶部层级规范表 */
   color: #fff;
   font-size: 12px;
   font-weight: 700;
@@ -715,15 +753,21 @@ footer {
   to   { opacity: 1;    transform: translateY(0); }
 }
 
-.imm-in-up   { animation: immSlideUp 0.3s ease; }
-.imm-in-down { animation: immSlideDown 0.3s ease; }
+/* 翻页动画：0.28 秒、ease-out（阶段 3 要求 0.25~0.3s、ease-out、方向与手指一致） */
+.imm-in-up   { animation: immSlideUp 0.28s ease-out; }
+.imm-in-down { animation: immSlideDown 0.28s ease-out; }
+
+/* 手指拖动时卡片实时跟手（由 js 设置 transform），此时不能有过渡动画；
+   松手回弹时才加 .imm-snapback，用 0.25 秒 ease-out 弹回原位 */
+.imm-card { will-change: transform; }
+.imm-card.imm-snapback { transition: transform 0.25s ease-out; }
 
 /* ---------- 阶段 2：打开时的操作提示 ---------- */
 .imm-hint {
   position: absolute;
   top: 54px;                   /* 在顶部条下方，不挡内容 */
   left: 0; right: 0;
-  z-index: 5;                  /* 必须比卡片内容高，否则会被封面图盖住看不见 */
+  z-index: 1020;               /* 提示条层，见顶部层级规范表 */
   text-align: center;
   pointer-events: none;        /* 提示不挡鼠标操作 */
 }
@@ -758,7 +802,7 @@ footer {
   left: 50%;
   bottom: 32px;
   transform: translateX(-50%);
-  z-index: 200;                /* 比沉浸视图还高，保证任何情况下都看得见 */
+  z-index: 2000;               /* 遮罩与弹层，见顶部层级规范表（DOM 里在 .immersive 之后，所以盖得住） */
   max-width: 90vw;
   padding: 12px 20px;
   border-radius: 14px;

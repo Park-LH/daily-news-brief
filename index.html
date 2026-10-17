@@ -1,10 +1,16 @@
-<!DOCTYPE html>
+﻿<!DOCTYPE html>
 <html lang="zh-CN">
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>每日新闻简报 📰</title>
-<link rel="stylesheet" href="css/style.css">
+<!-- 样式表带版本参数 ?v=：改动 CSS 后版本号一变，浏览器就会重新下载，
+     不会再拿旧的缓存。
+     这里刻意写成占位符 __BUILD__：磁盘上的文件永远是它，
+     由 start-server.ps1 在"发给浏览器那一刻"替换成当天日期（如 20261018），
+     源文件因此不会被改动、git 工作区始终是干净的。
+     详细说明见下方脚本注释 -->
+<link rel="stylesheet" href="css/style.css?v=__BUILD__">
 </head>
 <body>
 <div class="app">
@@ -130,11 +136,26 @@
 <div class="toast hidden" id="toast"></div>
 
 <!-- 脚本按依赖顺序引入：先工具，再配置，再统计，最后主逻辑
-     summarize.js 必须放在 config.js 前面，因为配置里的摘要功能要用到它 -->
-<script src="js/summarize.js"></script>
-<script src="js/config.js"></script>
-<script src="js/rss.js"></script>
-<script src="js/stats.js"></script>
-<script src="js/app.js"></script>
+     summarize.js 必须放在 config.js 前面，因为配置里的摘要功能要用到它
+
+     【?v= 版本号是怎么变的（以后不用手动 Ctrl+F5）】
+     源文件里一律写占位符 ?v=__BUILD__，永远不要把它改成具体日期。
+
+     服务器（start-server.ps1）在把本文件发给浏览器的那一刻，
+     会把 __BUILD__ 替换成"当天日期"（如 20261018）再下发。
+     于是：
+       - 磁盘上的 index.html 永远不变 → git 工作区始终干净
+       - 浏览器每天拿到的版本号自动变 → js/css 不会被旧缓存挡住
+     再加上服务器对 .html/.js/.css 一律返回
+       Cache-Control: no-cache，双保险，普通刷新（F5）即可看到新内容。
+
+     注意：只有走 start-server 打开页面才有这个效果。
+     直接双击 index.html（file:// 方式）没有服务器，占位符会原样保留，
+     浏览器会把它当成版本号字符串用，同样能绕过缓存，不影响正常显示。 -->
+<script src="js/summarize.js?v=__BUILD__"></script>
+<script src="js/config.js?v=__BUILD__"></script>
+<script src="js/rss.js?v=__BUILD__"></script>
+<script src="js/stats.js?v=__BUILD__"></script>
+<script src="js/app.js?v=__BUILD__"></script>
 </body>
 </html>

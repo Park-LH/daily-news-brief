@@ -16,7 +16,27 @@ $port = 8019
 # 统计数据文件的存放位置
 $dataFile = Join-Path $root ".data\stats.json"
 
-# ---------- 启动前检查 1：端口是否被占用 ----------
+# ---------- 资源版本号（防缓存）----------
+# index.html 里写的都是占位符 ?v=__BUILD__，这里把 __BUILD__ 换成当天日期
+# 再发给浏览器（运行时替换）。磁盘上的 index.html 一个字都不动，
+# 所以 git 工作区永远是干净的，不会出现"一启动就冒出个已修改文件"。
+# 日期每天变一次 → 浏览器每天都会重新下载 js/css，不用按 Ctrl+F5。
+$buildId = Get-Date -Format "yyyyMMdd"
+
+# ---------- 启动前 1：探测本机局域网 IP（给手机访问用）----------
+# 优先取 192.168.* 这类家庭/办公网段地址，取不到再退到其他内网地址
+function Get-LanIP {
+  $all = Get-NetIPAddress -AddressFamily IPv4 -ErrorAction SilentlyContinue |
+         Where-Object { $_.IPAddress -notlike '127.*' -and $_.IPAddress -notlike '169.254.*' }
+  $home = $all | Where-Object { $_.IPAddress -like '192.168.*' }
+  if ($home) { return ($home | Sort-Object InterfaceMetric | Select-Object -First 1).IPAddress }
+  $other = $all | Where-Object { $_.IPAddress -like '10.*' -or $_.IPAddress -like '172.1?.*' -or $_.IPAddress -like '172.2?.*' -or $_.IPAddress -like '172.3?.*' }
+  if ($other) { return ($other | Sort-Object InterfaceMetric | Select-Object -First 1).IPAddress }
+  return $null
+}
+$lanIP = Get-LanIP
+
+# ---------- 启动前 2：端口是否被占用 ----------
 # 原理：先试着把 8019 端口"占"一下，如果已被别人占用会抛异常
 $probe = New-Object System.Net.HttpListener
 try {
@@ -38,6 +58,29 @@ try {
   exit 1
 }
 
+# ---------- 启动前 3：决定监听地址（手机能不能访问就看这一步）----------
+# http://+:8019/ 表示监听所有网卡，手机在同一 WiFi 下就能连进来；
+# 但它需要管理员权限。不是管理员就退回 localhost，并明确中文提示，不静默失败。
+$isAdmin = ([Security.Principal.WindowsPrincipal] `
+  [Security.Principal.WindowsIdentity]::GetCurrent()
+).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+
+$lanMode = $false
+if ($isAdmin) {
+  $lanMode = $true
+} else {
+  Write-Host "=========================================" -ForegroundColor Yellow
+  Write-Host "  ⚠️ 当前为本地模式，手机无法访问" -ForegroundColor Yellow
+  Write-Host ""
+  Write-Host "  原因：监听局域网地址 http://+:$port/ 需要管理员权限，"
+  Write-Host "  而本窗口是以普通用户身份运行的。"
+  Write-Host ""
+  Write-Host "  想用手机访问：关闭本窗口 → 右键 start-server.bat"
+  Write-Host "  → 选择「以管理员身份运行」，启动后会显示手机访问地址。"
+  Write-Host "=========================================" -ForegroundColor Yellow
+  Write-Host ""
+}
+
 # ---------- 启动前检查 2：数据目录与文件是否就绪 ----------
 $dataDir = Split-Path -Parent $dataFile
 if (-not (Test-Path $dataDir)) {
@@ -50,12 +93,32 @@ if (-not (Test-Path $dataFile)) {
 }
 
 $listener = New-Object System.Net.HttpListener
-$listener.Prefixes.Add("http://localhost:$port/")
-$listener.Start()
+if ($lanMode) { $listener.Prefixes.Add("http://+:$port/") } else { $listener.Prefixes.Add("http://localhost:$port/") }
+try {
+  $listener.Start()
+} catch {
+  # 少数情况下即使是管理员也绑不上 +（被其他程序独占），退回 localhost 并说明
+  Write-Host "  ⚠️ 绑定局域网地址失败，已退回本地模式：$_" -ForegroundColor Yellow
+  $listener = New-Object System.Net.HttpListener
+  $listener.Prefixes.Add("http://localhost:$port/")
+  $listener.Start()
+  $lanMode = $false
+}
 
 Write-Host "========================================="
-Write-Host "  服务器已启动: http://localhost:$port/"
-Write-Host "  正在打开浏览器…"
+if ($lanMode) {
+  Write-Host "  手机/局域网模式：同一 WiFi 下的手机也能打开" -ForegroundColor Green
+  Write-Host "  本机访问: http://localhost:$port/" -ForegroundColor Cyan
+  Write-Host ("  手机访问: http://" + ($(if ($lanIP) { $lanIP } else { "未探测到局域网IP" })) + ":$port/") -ForegroundColor Cyan
+  Write-Host ""
+  Write-Host "  手机打不开时按顺序排查：" -ForegroundColor Yellow
+  Write-Host "   1. 手机和电脑连的是同一个 WiFi"
+  Write-Host "   2. Windows 防火墙弹过窗的话要选「允许访问」"
+  Write-Host "   3. 上面这行的 IP 要在手机浏览器里原样输入（含 http:// 和端口）"
+} else {
+  Write-Host "  服务器已启动（本地模式，仅本机能访问）" -ForegroundColor Yellow
+  Write-Host "  本机访问: http://localhost:$port/" -ForegroundColor Cyan
+}
 Write-Host "  停止方法：直接关闭本窗口"
 Write-Host "========================================="
 
@@ -154,8 +217,26 @@ while ($listener.IsListening) {
 
     if (Test-Path $file -PathType Leaf) {
       $ext = [IO.Path]::GetExtension($file).ToLower()
-      $bytes = [IO.File]::ReadAllBytes($file)
+
+      # HTML：先把内容读成文本，把版本号占位符 __BUILD__ 换成当天日期再下发
+      # （只在内存里替换，源文件不写回磁盘）
+      if ($ext -eq ".html") {
+        $htmlText = [IO.File]::ReadAllText($file, [Text.Encoding]::UTF8)
+        $bytes = [Text.Encoding]::UTF8.GetBytes(($htmlText -replace '__BUILD__', $buildId))
+      } else {
+        $bytes = [IO.File]::ReadAllBytes($file)
+      }
+
       $ctx.Response.ContentType = if ($mime.ContainsKey($ext)) { $mime[$ext] } else { "application/octet-stream" }
+
+      # 网页三件套一律禁止缓存：改完代码普通刷新（F5）就能看到新内容，
+      # 不用再按 Ctrl+F5。（配合 HTML 里的 ?v= 版本号，双保险）
+      if ($ext -eq ".html" -or $ext -eq ".js" -or $ext -eq ".css") {
+        $ctx.Response.Headers.Add("Cache-Control", "no-cache, no-store, must-revalidate")
+        $ctx.Response.Headers.Add("Pragma", "no-cache")
+        $ctx.Response.Headers.Add("Expires", "0")
+      }
+
       $ctx.Response.ContentLength64 = $bytes.Length
       $ctx.Response.OutputStream.Write($bytes, 0, $bytes.Length)
     } else {

@@ -122,6 +122,25 @@ function renderCategory(category, newsList) {
    ============================================================ */
 
 /**
+ * 预加载封面图：提前把"后 2 条 + 前 1 条"的图片下载好，
+ * 这样手指滑过去时不会先白一下才出图。
+ * 加载失败不用管——卡片里有 onerror，会自动露出 🖼️ 占位。
+ */
+function preloadNeighborImages() {
+  const total = latestNews.length;
+  if (!total) return;
+
+  [1, 2, -1].forEach(offset => {
+    const news = latestNews[(immIndex + offset + total) % total];
+    const url = news && safeUrl(news.image);
+    if (!url) return;
+    const img = new Image();      // 只下载到浏览器缓存里，不插进页面
+    img.onerror = () => {};       // 失败就失败，不影响使用
+    img.src = url;
+  });
+}
+
+/**
  * 组装「沉浸浏览」要看的新闻列表
  *
  * 做法：按 科技 → 财经 → 生活 的顺序，每个专题各取最多
@@ -223,6 +242,9 @@ function renderImmersiveCard() {
       </div>
     </div>
   `;
+
+  // 趁当前这条在看的时候，把前后几条的图片先下载好（见 preloadNeighborImages）
+  preloadNeighborImages();
 }
 
 /**
@@ -302,15 +324,35 @@ function goToImm(index, direction) {
   card.classList.add(direction === "down" ? "imm-in-down" : "imm-in-up");
 }
 
+/* ---------- 统一翻页锁（关键）----------
+   滚轮、方向键、手指滑动共用这一把锁，不允许各写一套。
+   规则：动画进行中、或手指手势还没结束，任何来源的翻页请求一律忽略。
+   不这么做的话，手机上会出现"滑一次跳两条"。
+
+   pageBusy    ：翻页动画播放中（约 PAGE_ANIM_MS 毫秒）
+   touchActive ：手指还按着、手势未结束 */
+const PAGE_ANIM_MS = 280;      // 与 CSS 里 .imm-in-up/.imm-in-down 的 0.28s 保持一致
+let pageBusy = false;
+let touchActive = false;
+
+/** 当前是否允许翻页（所有来源都要先问它） */
+function canPage() {
+  return !pageBusy && !touchActive && latestNews.length > 0;
+}
+
 /**
- * 翻页（供滚轮、方向键、手指滑动调用）
+ * 翻页（滚轮 / 方向键 / 手指滑动 都走这里）
  * @param {number} delta 1 = 下一条，-1 = 上一条
  */
 function stepImm(delta) {
   // 一条新闻都没有时直接忽略：
   // 下面 goToImm 里有 "取模" 运算（immIndex + total) % total，
   // total 为 0 时会算出 NaN，页面就会显示空白卡片。这里先把门看住。
-  if (!latestNews.length) return;
+  if (!canPage()) return;
+
+  pageBusy = true;
+  setTimeout(() => { pageBusy = false; }, PAGE_ANIM_MS);   // 动画播完才解锁
+
   goToImm(immIndex + delta, delta > 0 ? "up" : "down");
 }
 
@@ -442,55 +484,127 @@ $("immersiveView").addEventListener("wheel", e => {
 
 /* ---------- 阶段 3：手机手指上下滑动翻页 ---------- */
 
-// 记录手指按下时的位置，用来判断滑动方向和距离
+// 一次手势需要记录的几个量
 let touchStartX = 0;
 let touchStartY = 0;
-let touchActive = false;   // 本次滑动是否由我们处理（否则不翻页）
+let touchStartTime = 0;
+let touchMovedFar = false;   // 手指移动是否超过 10px（用来取消误点击）
+let touchScrollEl = null;    // 手指落在可滚动文字区时，记录那个元素
+let touchScrollTop = 0;      // 按下瞬间该文字区的滚动位置
+
+// 翻页判定门槛
+const SWIPE_DISTANCE_RATIO = 0.15;   // 拖动超过屏幕高度的 15% 就翻页
+const SWIPE_SPEED = 0.45;            // 或速度够快（像素/毫秒）也翻页
+const EDGE_RESIST = 0.25;            // 到首/尾边界时的阻力系数（越小越"拉不动"）
 
 $("immersiveView").addEventListener("touchstart", e => {
-  if (e.touches.length !== 1) { touchActive = false; return; }
+  touchMovedFar = false;
+  touchScrollEl = null;
+  touchActive = false;
+  if (e.touches.length !== 1) return;
+
   touchStartX = e.touches[0].clientX;
   touchStartY = e.touches[0].clientY;
-  touchActive = false;
+  touchStartTime = Date.now();
+
+  // 手指落在可滚动的摘要/摘抄上：这次手势用来滚文字，不翻页
+  const sc = scrollableTextUnder(e.target);
+  if (sc) {
+    touchScrollEl = sc;
+    touchScrollTop = sc.scrollTop;
+  }
 }, { passive: true });
 
 $("immersiveView").addEventListener("touchmove", e => {
-  if (e.touches.length !== 1) return;
+  if (e.touches.length !== 1 || !touchStartY) return;
+
   const dy = e.touches[0].clientY - touchStartY;
   const dx = e.touches[0].clientX - touchStartX;
 
-  // 滑动距离太小、或者是横着滑的：不管（避免误触翻页）
-  if (Math.abs(dy) < 10 || Math.abs(dy) <= Math.abs(dx)) return;
+  // 横向滑动（比如想点按钮）不参与翻页
+  if (Math.abs(dy) <= Math.abs(dx)) return;
 
-  // 手指落在可滚动的文字区里：让它正常滚文字
-  if (scrollableTextUnder(e.target)) return;
+  // 手指移动超过 10px 就记下来：松手时要取消 click，防止误点开原文
+  if (Math.abs(dy) > 10) touchMovedFar = true;
 
-  e.preventDefault();      // 拦住系统默认的页面滚动，改由我们翻页
-  touchActive = true;
+  // 情况一：在可滚动文字区里 —— 手动滚文字
+  // （外层设了 touch-action: none，浏览器不帮我们滚，所以自己算 scrollTop）
+  if (touchScrollEl) {
+    touchScrollEl.scrollTop = touchScrollTop - dy;
+    return;
+  }
 
-  // 跟手效果：手指移动时卡片跟着位移一点（0.45 是阻尼系数，手感更自然）
-  $("immCard").style.transform = `translateY(${dy * 0.45}px)`;
+  // 情况二：翻页手势
+  e.preventDefault();          // 拦住系统滚动，改由我们处理
+  touchActive = true;          // 手势未结束 → 统一锁打开，其他来源不能翻页
+
+  // 跟手位移：到首/尾边界时阻力变大（位移打折），模拟原生手感
+  const total = latestNews.length;
+  const atStart = immIndex === 0 && dy > 0;        // 第一条还想往下拖
+  const atEnd = immIndex === total - 1 && dy < 0;  // 最后一条还想往上拖
+  const damped = (atStart || atEnd) ? dy * EDGE_RESIST : dy;
+
+  const card = $("immCard");
+  card.classList.remove("imm-snapback");   // 拖动中不能有过渡，否则不跟手
+  card.style.transform = `translateY(${damped}px)`;
 }, { passive: false });
 
 $("immersiveView").addEventListener("touchend", e => {
-  // 松手先把位移复位（下一步要么翻页、要么弹回原位）
-  $("immCard").style.transform = "";
-
-  if (!touchActive) return;
-  touchActive = false;
-
+  const card = $("immCard");
   const endY = e.changedTouches[0] ? e.changedTouches[0].clientY : touchStartY;
   const dy = endY - touchStartY;
+  const wasActive = touchActive;
+  const wasScrolling = !!touchScrollEl;
 
-  // 手指上滑（dy 为负）= 看下一条；下滑 = 看上一条。超过 45 像素才算一次翻页
-  if (Math.abs(dy) > 45) stepImm(dy < 0 ? 1 : -1);
+  touchActive = false;         // 手势结束
+  touchScrollEl = null;
+
+  if (!wasActive || wasScrolling) {   // 不是翻页手势：直接复位即可
+    card.style.transform = "";
+    return;
+  }
+
+  // ---- 松手判定 ----
+  const stage = $("immersiveView").querySelector(".imm-stage");
+  const screenH = stage ? stage.clientHeight : window.innerHeight || 800;
+  const elapsed = Math.max(Date.now() - touchStartTime, 1);
+  const speed = Math.abs(dy) / elapsed;                  // 像素/毫秒
+  const farEnough = Math.abs(dy) > screenH * SWIPE_DISTANCE_RATIO;
+  const fastEnough = speed > SWIPE_SPEED && Math.abs(dy) > 24;
+
+  if (farEnough || fastEnough) {
+    // 满足翻页条件：先清掉位移，再翻页（翻页动画由 CSS 负责）
+    card.style.transform = "";
+    stepImm(dy < 0 ? 1 : -1);        // 上滑看下一条，下滑看上一条
+  } else {
+    // 不够：带动画回弹原位
+    card.classList.add("imm-snapback");
+    card.style.transform = "translateY(0)";
+    // 动画结束后把过渡类去掉，避免影响下次拖动
+    setTimeout(() => card.classList.remove("imm-snapback"), 260);
+  }
 });
 
-// 手指滑动被中途取消（比如来电）：同样复位，避免卡片卡在偏移状态
+// 手势被中途取消（来电等）：复位，别把卡片卡在偏移状态
 $("immersiveView").addEventListener("touchcancel", () => {
-  $("immCard").style.transform = "";
+  const card = $("immCard");
+  card.classList.add("imm-snapback");
+  card.style.transform = "translateY(0)";
+  setTimeout(() => card.classList.remove("imm-snapback"), 260);
   touchActive = false;
+  touchScrollEl = null;
 });
+
+// 坑 3：手指移动超过 10px 后取消本次 click，
+// 防止"本来想滑动"结果变成"点开了原文链接"。
+// 用捕获阶段（第三个参数 true）抢在链接的默认行为之前拦下来。
+$("immersiveView").addEventListener("click", e => {
+  if (touchMovedFar) {
+    e.preventDefault();
+    e.stopPropagation();
+    touchMovedFar = false;     // 用掉一次就复位，不影响下一次正常点击
+  }
+}, true);
 
 // ---- 键盘翻页 + ESC 退出 ----
 document.addEventListener("keydown", e => {
