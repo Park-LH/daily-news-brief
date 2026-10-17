@@ -569,6 +569,52 @@ footer {
   padding: 0 24px;
 }
 
+/* ---------- 阶段 2：翻页滑入动画 ---------- */
+/* 向下翻（看下一条）：新卡片从下方滑上来 */
+@keyframes immSlideUp {
+  from { opacity: 0.35; transform: translateY(30px); }
+  to   { opacity: 1;    transform: translateY(0); }
+}
+
+/* 向上翻（看上一条）：新卡片从上方滑下来 */
+@keyframes immSlideDown {
+  from { opacity: 0.35; transform: translateY(-30px); }
+  to   { opacity: 1;    transform: translateY(0); }
+}
+
+.imm-in-up   { animation: immSlideUp 0.3s ease; }
+.imm-in-down { animation: immSlideDown 0.3s ease; }
+
+/* ---------- 阶段 2：打开时的操作提示 ---------- */
+.imm-hint {
+  position: absolute;
+  top: 54px;                   /* 在顶部条下方，不挡内容 */
+  left: 0; right: 0;
+  z-index: 3;
+  text-align: center;
+  pointer-events: none;        /* 提示不挡鼠标操作 */
+}
+
+.imm-hint span {
+  display: inline-block;
+  padding: 6px 14px;
+  border-radius: 999px;
+  background: rgba(0, 0, 0, 0.42);
+  color: #fff;
+  font-size: 12px;
+  opacity: 0;                  /* 默认透明，只有加了 .show 才显示 */
+}
+
+/* 显示 2.4 秒后自动淡出（4s 动画：前 60% 可见，后 40% 淡出） */
+.imm-hint span.show { animation: hintFade 4s ease forwards; }
+
+@keyframes hintFade {
+  0%   { opacity: 0; }
+  10%  { opacity: 1; }
+  60%  { opacity: 1; }
+  100% { opacity: 0; }
+}
+
 /* 阶段 1 的临时预览按钮（阶段 4 会换成正式开关） */
 .btn-preview-imm {
   margin-top: 12px;

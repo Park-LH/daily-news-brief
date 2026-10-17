@@ -132,11 +132,52 @@ function renderImmersiveCard() {
   `;
 }
 
+/* ---------- 阶段 2：上下翻页 ---------- */
+
+// 翻页锁：鼠标滚轮一滚会连续触发几十次事件，
+// 用它限制成"一次滚动只翻一条"，避免唰地跳到最后一条
+let immLock = false;
+
+/**
+ * 跳到指定的一条新闻，并播放滑入动画
+ * @param {number} index     目标序号（可以是负数或超出总数，会自动绕回）
+ * @param {string} direction "up"=看下一条（从下滑上来），"down"=看上一条
+ */
+function goToImm(index, direction) {
+  if (!latestNews.length) return;
+  const total = latestNews.length;
+  immIndex = (index + total) % total;   // 循环：最后一条的下一个回到第一条
+  renderImmersiveCard();
+
+  // 重新播放动画的小技巧：先移除动画类 → 强制页面重排 → 再加上动画类
+  const card = $("immCard");
+  card.classList.remove("imm-in-up", "imm-in-down");
+  void card.offsetWidth;
+  card.classList.add(direction === "down" ? "imm-in-down" : "imm-in-up");
+}
+
+/**
+ * 翻页（供滚轮和方向键调用）
+ * @param {number} delta 1 = 下一条，-1 = 上一条
+ */
+function stepImm(delta) {
+  if (immLock || !latestNews.length) return;
+  immLock = true;
+  setTimeout(() => { immLock = false; }, 320);   // 320 毫秒内不重复翻页
+  goToImm(immIndex + delta, delta > 0 ? "up" : "down");
+}
+
 /** 打开沉浸浏览 */
 function openImmersive() {
   renderImmersiveCard();
   $("immersiveView").classList.remove("hidden");
   document.body.style.overflow = "hidden";   // 锁住背景滚动，只让卡片动
+
+  // 重新播放"操作提示"的淡出动画
+  const hint = $("immHint");
+  hint.classList.remove("show");
+  void hint.offsetWidth;
+  hint.classList.add("show");
 }
 
 /** 关闭沉浸浏览，回到列表 */
@@ -148,9 +189,36 @@ function closeImmersive() {
 // 阶段 1 的临时入口 + 退出按钮（阶段 4 会换成正式开关）
 $("btnPreviewImm").addEventListener("click", openImmersive);
 $("immClose").addEventListener("click", closeImmersive);
-// 按 ESC 也能退出，避免不小心被困在沉浸视图里
+
+// ---- 鼠标滚轮翻页（电脑用）----
+// 向下滚 = 看下一条，向上滚 = 看上一条
+$("immersiveView").addEventListener("wheel", e => {
+  e.preventDefault();                 // 阻止页面背景跟着滚动
+
+  // 例外：如果鼠标停在摘要文字上、且摘要内容超出可滚动，就让它正常滚文字
+  if (e.target.closest(".imm-summary")
+      && e.target.scrollHeight > e.target.clientHeight) return;
+
+  stepImm(e.deltaY > 0 ? 1 : -1);
+}, { passive: false });
+
+// ---- 键盘翻页 + ESC 退出 ----
 document.addEventListener("keydown", e => {
-  if (e.key === "Escape") closeImmersive();
+  const isOpen = !$("immersiveView").classList.contains("hidden");
+
+  if (e.key === "Escape") {            // ESC 随时可退出，防止被困住
+    closeImmersive();
+    return;
+  }
+  if (!isOpen) return;                 // 没打开沉浸浏览时，方向键保持页面默认行为
+
+  if (e.key === "ArrowDown" || e.key === "PageDown") {
+    e.preventDefault();
+    stepImm(1);                        // ↓ 看下一条
+  } else if (e.key === "ArrowUp" || e.key === "PageUp") {
+    e.preventDefault();
+    stepImm(-1);                       // ↑ 看上一条
+  }
 });
 
 /**
