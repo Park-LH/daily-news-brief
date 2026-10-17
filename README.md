@@ -63,7 +63,7 @@
 ```
 daily-news-brief/
 ├── README.md          ← 你正在看的这个文件（GitHub 首页展示）
-├── press message.md   ← 详细的中文使用说明（面向零基础用户）
+├── 使用说明.md       ← 详细的中文使用说明（面向零基础用户）
 ├── index.html         ← 入口页面
 ├── start-server.bat   ← 一键启动本地服务器
 ├── start-server.ps1   ← 服务器脚本（bat 自动调用，无需手动运行）
