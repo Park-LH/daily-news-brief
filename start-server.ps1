@@ -6,9 +6,10 @@
 #   可以监听浏览器请求并把项目文件发回去，不需要安装任何软件。
 # 用法：双击 start-server.bat（它会自动调用本文件）
 #
-# 本服务器提供两类服务：
+# 本服务器提供三类服务：
 #   1. 静态文件：把 html/css/js 文件发给浏览器
 #   2. 数据接口：/api/stats —— 保存和读取历史统计数据（存 .data/stats.json）
+#   3. RSS 代理：/api/feed —— 服务端代抓 RSS（解决 rss2json 只返回 10 条的限制）
 
 $root = Split-Path -Parent $MyInvocation.MyCommand.Path
 $port = 8019
@@ -22,6 +23,13 @@ $dataFile = Join-Path $root ".data\stats.json"
 # 所以 git 工作区永远是干净的，不会出现"一启动就冒出个已修改文件"。
 # 日期每天变一次 → 浏览器每天都会重新下载 js/css，不用按 Ctrl+F5。
 $buildId = Get-Date -Format "yyyyMMdd"
+
+# ---------- RSS 代理（/api/feed）的域名白名单 ----------
+# 只放行这里登记的域名及其子域（如 www.chinanews.com.cn）。
+# 目的：本接口是"服务器代你抓网页"，如果不限制域名，
+# 就等于开放了一个任意 URL 代理，局域网内谁都能借它访问外网任意地址。
+# 要接入新的官方媒体，把它的域名加进这个数组即可。
+$ALLOWED_FEED_HOSTS = @("chinanews.com.cn")
 
 # ---------- 启动前 1：探测本机局域网 IP（给手机访问用）----------
 # 优先取 192.168.* 这类家庭/办公网段地址，取不到再退到其他内网地址
@@ -162,12 +170,23 @@ function Write-StatsFile($obj) {
 }
 
 # 给浏览器回一段 JSON
-function Send-Json($ctx, $obj) {
-  $json = $obj | ConvertTo-Json -Depth 5
+# $depth 默认 5；RSS 代理那种"对象数组"要用到 10
+# （PS 5.1 的 ConvertTo-Json 默认 -Depth 2，深层结构会被压成字符串）
+# $statusCode 用于返回 403/502/504 等错误状态，不传就是默认 200
+function Send-Json($ctx, $obj, $depth = 5, $statusCode = 200) {
+  $json = $obj | ConvertTo-Json -Depth $depth
   $bytes = [Text.Encoding]::UTF8.GetBytes($json)
+  $ctx.Response.StatusCode = $statusCode
   $ctx.Response.ContentType = "application/json; charset=utf-8"
   $ctx.Response.ContentLength64 = $bytes.Length
   $ctx.Response.OutputStream.Write($bytes, 0, $bytes.Length)
+}
+
+# 取 XML 节点里的文字（兼容带命名空间前缀的 RSS，如 dc:date）
+function Get-NodeText($node, $name) {
+  $child = $node.SelectSingleNode("*[local-name()='$name']")
+  if ($null -eq $child) { return "" }
+  return ($child.InnerText | Out-String).Trim()
 }
 
 # ---------- 主循环：等待并处理请求 ----------
@@ -204,7 +223,133 @@ while ($listener.IsListening) {
       continue
     }
 
-    # ===== 接口 2：静态文件 =====
+    # ===== 接口 2：/api/feed 服务端代抓 RSS（GET /api/feed?url=...）=====
+    # 为什么需要它：浏览器直连 RSS 只能走 rss2json，而它固定只返回最新 10 条；
+    # 服务端自己抓源站能拿到全部条目（中新网实测 27~30 条）。
+    #
+    # 返回：{ ok, url, encoding, count, items:[{title,link,pubDate,description}] }
+    # 出错：{ ok:false, error, message } + 对应 HTTP 状态码，绝不回吐原始异常页面。
+    if ($path -eq "/api/feed") {
+      if ($ctx.Request.HttpMethod -ne "GET") {
+        Send-Json $ctx @{ ok = $false; error = "METHOD_NOT_ALLOWED"; message = "请用 GET" } -statusCode 405
+        $ctx.Response.Close()
+        continue
+      }
+
+      # ---- 第 0 步：取 url 参数 ----
+      $feedUrl = ""
+      if ($ctx.Request.QueryString["url"]) {
+        $feedUrl = ($ctx.Request.QueryString["url"] | Out-String).Trim()
+      }
+      if ([string]::IsNullOrEmpty($feedUrl)) {
+        Send-Json $ctx @{
+          ok = $false; error = "MISSING_URL"
+          message = "缺少 url 参数，例：/api/feed?url=" +
+                    [Uri]::EscapeDataString("https://www.chinanews.com.cn/rss/scroll-news.xml")
+        } -statusCode 400
+        $ctx.Response.Close()
+        continue
+      }
+
+      # ---- 第 1 步：域名白名单（防被当成任意 URL 代理）----
+      $hostName = ""
+      try { $hostName = ([Uri]$feedUrl).Host } catch { $hostName = "" }
+      $allowed = $false
+      foreach ($d in $ALLOWED_FEED_HOSTS) {
+        if ($hostName -eq $d -or $hostName -like "*.$d") { $allowed = $true; break }
+      }
+      if (-not $allowed) {
+        Send-Json $ctx @{
+          ok = $false; error = "DOMAIN_NOT_ALLOWED"
+          message = "只允许抓取白名单域名的 RSS（当前允许：$($ALLOWED_FEED_HOSTS -join '、')）"
+          host = $hostName
+        } -statusCode 403
+        $ctx.Response.Close()
+        continue
+      }
+
+      # ---- 第 2 步：抓取 ----
+      # 强制 TLS 1.2：PS 5.1 默认可能只开 TLS 1.0，不加会报"基础连接已关闭"
+      [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+      $resp = $null
+      try {
+        $resp = Invoke-WebRequest -Uri $feedUrl -UseBasicParsing -TimeoutSec 15 `
+                -Headers @{ "User-Agent" = "Mozilla/5.0" }
+      } catch {
+        $msg = ($_.Exception.Message | Out-String).Trim()
+        $isTimeout = $msg -match "超时|timed out|Timeout"
+        $errCode = if ($isTimeout) { "FETCH_TIMEOUT" } else { "FETCH_FAILED" }
+        $errMsg  = if ($isTimeout) { "抓取超时（15 秒）" } else { "抓取失败：$msg" }
+        Write-Host "  [RSS代理] 失败 $feedUrl —— $errMsg" -ForegroundColor Yellow
+        Send-Json $ctx @{ ok = $false; error = $errCode; message = $errMsg; url = $feedUrl } `
+                  -statusCode $(if ($isTimeout) { 504 } else { 502 })
+        $ctx.Response.Close()
+        continue
+      }
+
+      # ---- 第 3 步：取原始字节，按 XML 声明的编码解码（保证中文不乱码）----
+      # 注意：不能直接读 $resp.Content —— PS 5.1 会按错误编码把中文解成乱码
+      # （实测会变成 ä¸­å¤... 这种），必须自己按字节解码。
+      $ms = New-Object IO.MemoryStream
+      try {
+        $resp.RawContentStream.Position = 0
+        $resp.RawContentStream.CopyTo($ms)
+      } catch { }
+      $bytes = $ms.ToArray()
+
+      # 跳过 UTF-8 BOM（不跳的话 XML 解析会报"根级别上的数据无效"）
+      $offset = 0
+      if ($bytes.Length -ge 3 -and $bytes[0] -eq 0xEF -and $bytes[1] -eq 0xBB -and $bytes[2] -eq 0xBF) {
+        $offset = 3
+      }
+
+      # 从 XML 声明里读 encoding，读不到就按 UTF-8
+      $head = [Text.Encoding]::ASCII.GetString($bytes, $offset, [Math]::Min(300, $bytes.Length - $offset))
+      $encName = ([regex]::Match($head, 'encoding\s*=\s*["'']([^"'']+)["'']')).Groups[1].Value
+      if ([string]::IsNullOrEmpty($encName)) { $encName = "utf-8" }
+      $enc = $null
+      try { $enc = [Text.Encoding]::GetEncoding($encName) } catch { $enc = $null }
+      if ($null -eq $enc) { $enc = [Text.Encoding]::UTF8 }
+      $xmlText = $enc.GetString($bytes, $offset, $bytes.Length - $offset)
+
+      # ---- 第 4 步：解析 XML，逐条取出 4 个字段 ----
+      $items = @()
+      try {
+        $doc = New-Object System.Xml.XmlDocument
+        $doc.LoadXml($xmlText)
+        # 用 local-name() 兼容带命名空间前缀的 RSS
+        $nodes = $doc.SelectNodes("//*[local-name()='item']")
+        foreach ($n in $nodes) {
+          $items += [PSCustomObject]@{
+            title       = Get-NodeText $n "title"
+            link        = Get-NodeText $n "link"
+            pubDate     = Get-NodeText $n "pubDate"
+            description = Get-NodeText $n "description"
+          }
+        }
+      } catch {
+        $msg = ($_.Exception.Message | Out-String).Trim()
+        Write-Host "  [RSS代理] XML 解析失败 $feedUrl —— $msg" -ForegroundColor Yellow
+        Send-Json $ctx @{
+          ok = $false; error = "PARSE_FAILED"
+          message = "RSS 解析失败（源站可能返回了非 XML 内容）：$msg"
+          url = $feedUrl; encoding = $encName
+        } -statusCode 500
+        $ctx.Response.Close()
+        continue
+      }
+
+      # ---- 第 5 步：返回（条目不限量，有多少给多少）----
+      Write-Host "  [RSS代理] $hostName → $($items.Count) 条（编码 $encName）"
+      Send-Json $ctx @{
+        ok = $true; url = $feedUrl; encoding = $encName
+        count = $items.Count; items = @($items)
+      } -depth 10
+      $ctx.Response.Close()
+      continue
+    }
+
+    # ===== 接口 3：静态文件 =====
     if ($path -eq "/") { $path = "/index.html" }
 
     # 拼出本地文件路径，并检查它确实在项目文件夹里（安全防护）

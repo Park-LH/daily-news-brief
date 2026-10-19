@@ -4,17 +4,110 @@
  * ============================================================
  * 原理（零基础解释）：
  *   浏览器出于安全限制，不能直接读取别人网站的 RSS 文件，
- *   所以我们借助一个免费的公共接口 rss2json，
- *   它帮我们把 RSS 转成好处理的 JSON 数据再传回来。
- *   接口文档：https://rss2json.com  免费额度：每天若干次，够个人使用
+ *   所以要靠"中间人"帮忙取数据。本项目有两条通道，再加一级兜底：
+ *
+ *   通道 1（优先）/api/feed —— 本地 start-server.ps1 自带的代理接口
+ *     和页面同源，所以没有跨域问题；服务端直接抓源站，
+ *     能拿到源站全部条目（中新网实测 30 条，而 rss2json 只给 10 条）。
+ *     只有用 start-server 打开页面（http://）时才存在，
+ *     直接双击 index.html（file://）时没有服务器，会自动跳过。
+ *
+ *   通道 2（降级）rss2json —— 免费公共接口，文档 https://rss2json.com
+ *     代理不可用（服务器没起、超时、源站报错）时自动退回这里。
+ *
+ *   通道 3（兜底）两条都失败 → 抛中文错误，
+ *     页面沿用现有的"以下源暂时无法访问"提示，不会白屏。
  */
 
+// 本地代理接口路径与超时。超时故意设得很短（3 秒）：
+// 服务器没启动时立刻让位给 rss2json，不让页面干等。
+const FEED_PROXY_PATH = "/api/feed";
+const FEED_PROXY_TIMEOUT_MS = 3000;
+const RSS2JSON_TIMEOUT_MS = 15000;
+
 /**
- * 从一个 RSS 地址抓取新闻列表
+ * 从一个 RSS 地址抓取新闻列表（三级降级入口）
+ *
+ * 顺序：本地代理 /api/feed → rss2json → 抛中文错误（页面显示"源暂时无法访问"）
+ * file:// 打开时没有本地服务器，跳过代理直接走 rss2json。
+ *
  * @param {string} feedUrl RSS 订阅地址
  * @returns {Array} 新闻数组，每项含 title / link / summary / pubDate
  */
 async function fetchRss(feedUrl) {
+  const started = Date.now();
+
+  // location 在部分环境（如 node 里做单元测试）可能不存在，做个保护
+  const hasServer = typeof location !== "undefined" && location.protocol !== "file:";
+
+  // ---- 通道 1：本地代理（http:// 打开时才存在）----
+  if (hasServer) {
+    try {
+      const items = await fetchViaProxy(feedUrl);
+      logFetchResult(feedUrl, "本地代理 /api/feed", items.length, started);
+      return items;
+    } catch (e) {
+      // 代理不可用不算失败，只是让位给下一条通道
+      console.warn(`[RSS] 本地代理不可用，降级到 rss2json：${e.message}`);
+    }
+  }
+
+  // ---- 通道 2：rss2json（失败会抛中文错误，由调用方显示提示）----
+  const items = await fetchViaRss2Json(feedUrl);
+  logFetchResult(feedUrl, hasServer ? "rss2json（代理已降级）" : "rss2json（file:// 直连）",
+                 items.length, started);
+  return items;
+}
+
+/**
+ * 通道 1：走本地服务器代理 /api/feed?url=...
+ * 同源请求，没有跨域限制；服务端直连源站，条目不截断。
+ */
+async function fetchViaProxy(feedUrl) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), FEED_PROXY_TIMEOUT_MS);
+
+  let resp, data;
+  try {
+    resp = await fetch(`${FEED_PROXY_PATH}?url=${encodeURIComponent(feedUrl)}`,
+                       { signal: controller.signal });
+    // 403/404/500/502/504 都算代理通道失败，交给 rss2json
+    if (!resp.ok) {
+      throw new Error(`接口返回 HTTP ${resp.status}`);
+    }
+    data = await resp.json();
+  } catch (e) {
+    if (e && e.name === "AbortError") {
+      throw new Error(`代理超时（${FEED_PROXY_TIMEOUT_MS} 毫秒）`);
+    }
+    throw new Error(e && e.message ? e.message : "本地代理不可用");
+  } finally {
+    clearTimeout(timer);
+  }
+
+  // 接口自己也会返回 ok:false（白名单拦截、源站 404、解析失败等）
+  if (!data || data.ok !== true) {
+    throw new Error((data && data.message) || "代理返回失败");
+  }
+
+  const items = Array.isArray(data.items) ? data.items : [];
+  // 代理只给 title/link/pubDate/description，没有正文和缩略图字段，
+  // 所以 content 留空、image 仍从 description 里的 <img> 找（extractImage 已支持）
+  return items.map(item => ({
+    title: stripHtml(item.title || ""),
+    link: item.link || "",
+    summary: stripHtml(item.description || ""),
+    pubDate: item.pubDate || "",
+    image: extractImage(item),
+    content: "",
+  }));
+}
+
+/**
+ * 通道 2：走 rss2json 公共接口（代理不可用时的退路）
+ * 它会额外整理出 content / thumbnail 字段，但只返回最新 10 条。
+ */
+async function fetchViaRss2Json(feedUrl) {
   // 拼接公共接口地址，rss_url 参数填入 RSS 地址
   const api = "https://api.rss2json.com/v1/api.json?rss_url="
             + encodeURIComponent(feedUrl);
@@ -22,7 +115,7 @@ async function fetchRss(feedUrl) {
   // 超时控制：15 秒没回应就放弃，避免页面一直转圈
   // （零基础解释：AbortController 就像一个闹钟，到点强制取消这次请求）
   const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), 15000);
+  const timer = setTimeout(() => controller.abort(), RSS2JSON_TIMEOUT_MS);
 
   let resp;
   try {
@@ -66,6 +159,56 @@ async function fetchRss(feedUrl) {
     // 只存 3000 字是为了省内存；有些源不提供正文，这里会是空字符串
     content: stripHtml(item.content || "").slice(0, 3000),
   }));
+}
+
+/**
+ * 每个源打一行 Console：走了哪条通道、拿到几条、花了多少毫秒
+ * 例：[RSS] scroll-news.xml · 本地代理 /api/feed · 30 条 · 412ms
+ * 排查"为什么只有 10 条"时，看这一行就知道是不是降级到了 rss2json。
+ */
+function logFetchResult(feedUrl, channel, count, started) {
+  const name = String(feedUrl).split("/").pop() || feedUrl;
+  console.log(`[RSS] ${name} · ${channel} · ${count} 条 · ${Date.now() - started}ms`);
+}
+
+/**
+ * 去掉文本中的 HTML 标签（如 <p>、<img>），只留纯文字
+ * 原理：利用浏览器自带的 DOM 解析，比正则更可靠
+ */
+function stripHtml(html) {
+  const div = document.createElement("div");
+  div.innerHTML = html;
+  return (div.textContent || "").trim();
+}
+
+/**
+ * 提取新闻配图地址（记者/编辑选用的文章封面图）
+ * 按优先级依次尝试 3 个地方，找到哪个用哪个，都没有则返回 ""
+ *   1. item.thumbnail      —— rss2json 整理好的缩略图字段
+ *   2. item.enclosure      —— RSS 标准的附件字段（很多新闻站的封面图放这里）
+ *   3. 正文 description 里 —— 有的站把图直接嵌在正文第一段 HTML 里
+ */
+function extractImage(item) {
+  // 1. 缩略图字段
+  if (item.thumbnail && item.thumbnail.startsWith("http")) {
+    return item.thumbnail;
+  }
+
+  // 2. 附件字段（必须是图片类型的附件才用）
+  if (item.enclosure && item.enclosure.link
+      && (item.enclosure.type || "").startsWith("image")) {
+    return item.enclosure.link;
+  }
+
+  // 3. 从正文 HTML 里找出第一张 <img> 的地址
+  const div = document.createElement("div");
+  div.innerHTML = item.description || "";
+  const img = div.querySelector("img");
+  if (img && img.src && img.src.startsWith("http")) {
+    return img.src;
+  }
+
+  return "";
 }
 
 /**
