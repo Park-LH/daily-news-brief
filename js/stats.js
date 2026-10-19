@@ -14,8 +14,9 @@
 // 统计图展示最近几天
 const STATS_DAYS = 7;
 
-// 三个分类的图表颜色（与页面粉蓝主题搭配）
+// 四个分类的图表颜色（与页面粉蓝主题搭配）
 const STATS_COLORS = {
+  "政治": "#dc2626",   // 红
   "科技": "#3b82f6",   // 蓝
   "财经": "#f59e0b",   // 金黄
   "生活": "#ec4899",   // 粉
@@ -33,9 +34,13 @@ function statsDayKey(d) {
  * 记录今天的分类数据（每次成功生成简报后调用，同一天覆盖更新）
  * 同时写两处：localStorage（本地兜底）+ 后端接口（若有）
  */
-async function recordTodayStats(tech, fin, life) {
+async function recordTodayStats(pol, tech, fin, life) {
   const key = statsDayKey(new Date());
-  const value = { "科技": tech, "财经": fin, "生活": life, total: tech + fin + life };
+  // 老数据（只有科技/财经/生活）读回来时 政治 会算作 0，不影响展示
+  const value = {
+    "政治": pol, "科技": tech, "财经": fin, "生活": life,
+    total: pol + tech + fin + life,
+  };
 
   // 1. 本地兜底：无论如何先写 localStorage
   //    加 try 是因为某些浏览器（无痕模式、禁用存储）写 localStorage 会直接抛错，
@@ -64,7 +69,7 @@ async function recordTodayStats(tech, fin, life) {
 /**
  * 读取最近 n 天的统计数据
  * 优先从后端读（换浏览器也能看到）；后端不可用则读 localStorage
- * @returns {Array} 每项含 { date, tech, fin, life, total, isToday }
+ * @returns {Array} 每项含 { date, pol, tech, fin, life, total, isToday }
  */
 async function loadStatsDays(n) {
   // 先尝试后端
@@ -105,10 +110,13 @@ async function loadStatsDays(n) {
 
     days.push({
       date: d,
+      pol: data ? (data["政治"] || 0) : 0,
       tech: data ? (data["科技"] || 0) : 0,
       fin: data ? (data["财经"] || 0) : 0,
       life: data ? (data["生活"] || 0) : 0,
-      total: data ? (data.total || 0) : 0,
+      // 老记录没有"政治"这一项，total 也可能是旧的三个分类之和，
+      // 这里重新加一遍，保证柱状图高度和明细表永远自洽
+      total: data ? (data["政治"] || 0) + (data["科技"] || 0) + (data["财经"] || 0) + (data["生活"] || 0) : 0,
       isToday: i === 0,
     });
   }
@@ -130,17 +138,18 @@ async function renderStats() {
   if (recordedDays === 0) {
     summary.textContent = "数据从今天开始积累：每次生成简报都会记一笔，连用几天后这里会出现历史统计图。";
   } else {
+    const pol = days.reduce((s, d) => s + d.pol, 0);
     const tech = days.reduce((s, d) => s + d.tech, 0);
     const fin = days.reduce((s, d) => s + d.fin, 0);
     const life = days.reduce((s, d) => s + d.life, 0);
-    const total = tech + fin + life;
+    const total = pol + tech + fin + life;
     // 日均应该按"真正有记录的天数"算，而不是固定的 7 天
     // （才用 2 天时，除以 7 会把日均算得偏低，看着像坏了）
     const avg = (total / recordedDays).toFixed(1);
-    summary.textContent = `近 ${STATS_DAYS} 天共 ${total} 条 · 日均 ${avg} 条 · 科技 ${tech} / 财经 ${fin} / 生活 ${life}`;
+    summary.textContent = `近 ${STATS_DAYS} 天共 ${total} 条 · 日均 ${avg} 条 · 政治 ${pol} / 科技 ${tech} / 财经 ${fin} / 生活 ${life}`;
   }
 
-  // ---- 柱状图：柱子总高按当天合计与最大值的比例，内部按三分类分段 ----
+  // ---- 柱状图：柱子总高按当天合计与最大值的比例，内部按四分类分段 ----
   const max = Math.max(...days.map(d => d.total), 1);
   bars.innerHTML = days.map(day => {
     const h = Math.round(day.total / max * 100);
@@ -149,6 +158,7 @@ async function renderStats() {
       `<div style="height:${(count / day.total) * 100}%;background:${color}"></div>`;
     return `<div class="sbar-col">
       <div class="sbar" style="height:${h}%; opacity:${day.total === 0 ? 0.12 : 1}">
+        ${seg(day.pol, STATS_COLORS["政治"])}
         ${seg(day.tech, STATS_COLORS["科技"])}
         ${seg(day.fin, STATS_COLORS["财经"])}
         ${seg(day.life, STATS_COLORS["生活"])}
@@ -166,6 +176,7 @@ async function renderStats() {
     const cls = day.isToday ? ' class="today"' : "";
     return `<tr${cls}>
       <td>${label}</td>
+      <td>${day.pol}</td>
       <td>${day.tech}</td>
       <td>${day.fin}</td>
       <td>${day.life}</td>

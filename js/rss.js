@@ -109,6 +109,25 @@ function extractImage(item) {
 }
 
 /**
- * 把新闻归入"科技/财经/生活"三个板块并渲染到页面
+ * 按关键词筛选新闻
+ * 用途：某些官方媒体没有细分频道（比如中新网没有专门的科技频道），
+ * 只能先抓综合频道，再用关键词把某一类新闻挑出来。
+ *
+ * @param {Array}  items    新闻数组
+ * @param {Array}  keywords 关键词数组；为空数组/不传则原样返回（不做筛选）
+ * @returns {Array} 标题或摘要中命中任意一个关键词的新闻
+ */
+function filterByKeywords(items, keywords) {
+  if (!Array.isArray(keywords) || keywords.length === 0) {
+    return items;
+  }
+  return items.filter(item => {
+    const text = (item.title || "") + " " + (item.summary || "");
+    return keywords.some(word => text.includes(word));
+  });
+}
+
+/**
+ * 把新闻归入"政治/科技/财经/生活"四个板块并渲染到页面
  * （渲染逻辑在第 2 步由 app.js 调用，这里只提供数据工具）
  */

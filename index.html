@@ -40,6 +40,12 @@
   <!-- ===== 简报区域（初始为空，由 js/app.js 填充内容） ===== -->
   <main class="briefing hidden" id="briefing">
 
+    <!-- 政治分类（2026-10-18 新增：权威官方媒体，中新网） -->
+    <section class="category" id="cat-政治">
+      <h2><span class="cat-icon">🏛️</span> 政治</h2>
+      <div class="news-list"></div>
+    </section>
+
     <!-- 科技分类 -->
     <section class="category" id="cat-科技">
       <h2><span class="cat-icon">💻</span> 科技</h2>
@@ -64,7 +70,7 @@
   <div class="empty" id="empty">
     <div class="empty-icon">🗞️</div>
     <p>点击上方按钮，生成属于你的今日新闻简报</p>
-    <p class="empty-tip">共 6 个免费 RSS 源 · 分三个板块展示 · 支持列表/沉浸两种浏览方式</p>
+    <p class="empty-tip">共 6 个免费 RSS 源 · 全部来自权威官方媒体 · 分四个板块展示 · 支持列表/沉浸两种浏览方式</p>
   </div>
 
   <!-- ===== 错误提示（默认隐藏） ===== -->
@@ -85,6 +91,7 @@
         <thead>
           <tr>
             <th>日期</th>
+            <th>政治</th>
             <th>科技</th>
             <th>财经</th>
             <th>生活</th>

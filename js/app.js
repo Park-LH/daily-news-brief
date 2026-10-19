@@ -5,8 +5,8 @@
  * 点击"生成今日简报"后的完整流程：
  *   1. 并行抓取 config.js 里配置的所有 RSS 源
  *      （某个源失败不影响其他源，页面上会标注）
- *   2. 合并所有新闻，按发布时间从新到旧排序，只保留 MAX_NEWS 条
- *   3. 按"科技 / 财经 / 生活"分类渲染到对应板块
+ *   2. 合并所有新闻，按发布时间从新到旧排序，再按每个专题的配额挑出要显示的条
+ *   3. 按"政治 / 科技 / 财经 / 生活"分类渲染到对应板块
  *   4. 每条新闻调用 generateSummary()（目前直接返回 RSS 摘要，
  *      以后接入 AI 时只改 config.js 里的这个函数即可）
  */
@@ -68,8 +68,21 @@ function formatTime(pubDate) {
 }
 
 /**
+ * 生成"来源"显示文案：媒体机构 · 频道
+ * 例：中国新闻社 · 中新网要闻
+ * 每条新闻都会保留 publisher（媒体机构）和 source（频道）两个字段，
+ * 页面上把机构放在前面，方便一眼看出是哪家媒体发的。
+ */
+function formatSourceLabel(news) {
+  const publisher = news.publisher || "";
+  const channel = news.source || "";
+  if (publisher && channel) return `${publisher} · ${channel}`;
+  return publisher || channel || "未知来源";
+}
+
+/**
  * 渲染单个分类板块
- * @param {string} category 分类名："科技" / "财经" / "生活"
+ * @param {string} category 分类名："政治" / "科技" / "财经" / "生活"
  * @param {Array}  newsList 该分类下的新闻数组
  */
 function renderCategory(category, newsList) {
@@ -106,7 +119,7 @@ function renderCategory(category, newsList) {
         <a href="${escapeHtml(link)}" target="_blank" rel="noopener">${escapeHtml(news.title)}</a>
         <div class="summary">${escapeHtml(news.summary || "（这条新闻没有自带摘要，点击标题查看原文）")}</div>
         <div class="meta">
-          <span>来源：${escapeHtml(news.source)}</span>
+          <span>来源：${escapeHtml(formatSourceLabel(news))}</span>
           ${news.time ? `<span>${escapeHtml(news.time)}</span>` : ""}
         </div>
       </div>
@@ -141,17 +154,40 @@ function preloadNeighborImages() {
 }
 
 /**
+ * 挑出「列表页」要显示的新闻：每个专题各取前 MAX_NEWS_PER_CATEGORY 条
+ *
+ * 为什么不直接取"全局最新 N 条"：政治源（中新网）更新很密，
+ * 一口气就能把名额占满，其他专题会被挤成空板块。
+ * 给每个专题留配额，四个板块就都有内容。
+ *
+ * @param {Array} sortedNews 已按时间从新到旧排好序的新闻数组
+ * @returns {Array} 列表页要显示的数组（仍按时间从新到旧）
+ */
+function buildListNews(sortedNews) {
+  const CATEGORY_ORDER = ["政治", "科技", "财经", "生活"];
+  const list = [];
+  for (const category of CATEGORY_ORDER) {
+    list.push(...sortedNews
+      .filter(n => n.category === category)
+      .slice(0, MAX_NEWS_PER_CATEGORY));
+  }
+  // 拼好后重新按时间排一次，页面上的顺序仍是"最新在前"
+  list.sort((a, b) => new Date(b.pubDate) - new Date(a.pubDate));
+  return list.slice(0, MAX_NEWS);
+}
+
+/**
  * 组装「沉浸浏览」要看的新闻列表
  *
- * 做法：按 科技 → 财经 → 生活 的顺序，每个专题各取最多
+ * 做法：按 政治 → 科技 → 财经 → 生活 的顺序，每个专题各取最多
  * IMMERSIVE_MAX_PER_CATEGORY 条，再依次拼起来。
- * 这样三个专题都能刷到，不会出现"只剩一个专题"的情况。
+ * 这样四个专题都能刷到，不会出现"只剩一两个专题"的情况。
  *
  * @param {Array} sortedNews 已经按时间从新到旧排好序的新闻数组
  * @returns {Array} 沉浸浏览要显示的列表
  */
 function buildImmersiveList(sortedNews) {
-  const CATEGORY_ORDER = ["科技", "财经", "生活"];   // 沉浸浏览里的专题顺序
+  const CATEGORY_ORDER = ["政治", "科技", "财经", "生活"];   // 沉浸浏览里的专题顺序
   const list = [];
 
   for (const category of CATEGORY_ORDER) {
@@ -229,7 +265,7 @@ function renderImmersiveCard() {
       <div class="imm-excerpt hidden" id="immExcerpt"></div>
 
       <div class="imm-meta">
-        <span>来源：${escapeHtml(news.source)}</span>
+        <span>来源：${escapeHtml(formatSourceLabel(news))}</span>
         ${news.time ? `<span>${news.time}</span>` : ""}
       </div>
 
@@ -650,14 +686,22 @@ $("btnGenerate").addEventListener("click", async () => {
   error.classList.add("hidden");
 
   try {
-    // ---- 第 1 步：并行抓取所有源（Promise.allSettled 保证单个失败不影响整体）----
+    // ---- 第 1 步：并行抓取所有"允许接入"的源 ----
+    // 注意：这里用 getEnabledSources() 而不是直接用 RSS_SOURCES，
+    // 它会先拿 AUTHORITATIVE_MEDIA 白名单核对一遍，非权威媒体的源进不来。
+    const sources = getEnabledSources();
     const results = await Promise.allSettled(
-      RSS_SOURCES.map(async source => {
+      sources.map(async source => {
         const items = await fetchRss(source.url);          // rss.js 里的抓取函数
-        return items.slice(0, source.maxItems).map(item => ({
+        // 关键词筛选：综合频道（如中新网滚动）里只保留命中的那一类新闻
+        const picked = filterByKeywords(items, source.keywords);
+        const media = AUTHORITATIVE_MEDIA[source.publisher] || {};
+        return picked.slice(0, source.maxItems).map(item => ({
           ...item,
           category: source.category,                       // 标记分类
-          source: source.name,                             // 标记来源名
+          source: source.name,                             // 频道名，如"中新网要闻"
+          publisher: source.publisher,                     // 媒体机构，如"中国新闻社"
+          publisherType: media.type || "",                 // 机构性质，如"国家通讯社"
           time: formatTime(item.pubDate),
         }));
       })
@@ -672,9 +716,9 @@ $("btnGenerate").addEventListener("click", async () => {
         successCount++;
         allNews.push(...result.value);
       } else {
-        failedSources.push(RSS_SOURCES[i].name);
+        failedSources.push(sources[i].name);
         // 把失败原因记到控制台，方便排查（页面只显示简明中文提示）
-        console.warn("源抓取失败 - " + RSS_SOURCES[i].name + ":",
+        console.warn("源抓取失败 - " + sources[i].name + ":",
                      result.reason?.message || result.reason);
       }
     });
@@ -691,9 +735,9 @@ $("btnGenerate").addEventListener("click", async () => {
     // 打印过滤前后数量（浏览器按 F12 → Console 可看到这行）
     console.log(`[时间过滤] 过滤前共 ${countBefore} 条，今天 00:00 后保留 ${todayNews.length} 条`);
 
-    // ---- 第 3 步：按时间从新到旧排序，最多保留 MAX_NEWS 条 ----
+    // ---- 第 3 步：按时间从新到旧排序，再挑出列表页要显示的新闻 ----
     todayNews.sort((a, b) => new Date(b.pubDate) - new Date(a.pubDate));
-    const topNews = todayNews.slice(0, MAX_NEWS);
+    const topNews = buildListNews(todayNews);
 
     // ---- 第 3 步：给每条新闻生成摘要（AI 预留接口，见 config.js）----
     // 这里遍历的是"今天全部新闻"而不是只前 10 条：
@@ -707,10 +751,14 @@ $("btnGenerate").addEventListener("click", async () => {
       news.summary = await generateSummary(news.title, news.summary);
     }
 
-    // ---- 第 4 步：按分类渲染到三个板块 ----
+    // ---- 第 4 步：按分类渲染到四个板块 ----
+    // 注意：政治排在第一个（时政要闻优先）。新增/调整板块顺序时，
+    // 记得同时改 index.html 里对应的 <section> 和 js/stats.js 里的统计字段。
+    const polList = topNews.filter(n => n.category === "政治");
     const techList = topNews.filter(n => n.category === "科技");
     const finList = topNews.filter(n => n.category === "财经");
     const lifeList = topNews.filter(n => n.category === "生活");
+    renderCategory("政治", polList);
     renderCategory("科技", techList);
     renderCategory("财经", finList);
     renderCategory("生活", lifeList);
@@ -736,7 +784,7 @@ $("btnGenerate").addEventListener("click", async () => {
     // ---- 第 5 步：记录今天的分类数据并渲染历史统计图 ----
     // （只有至少一个源连接成功才记录，避免把"全部失败"记成 0 条）
     if (successCount > 0) {
-      await recordTodayStats(techList.length, finList.length, lifeList.length);
+      await recordTodayStats(polList.length, techList.length, finList.length, lifeList.length);
     }
     await renderStats();
 
