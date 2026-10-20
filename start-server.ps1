@@ -482,17 +482,32 @@ while ($listener.IsListening) {
       # 3 秒已经是很宽松的上限；慢了就放弃，前端铺渐变底。
       [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
       $resp = $null
-      try {
-        $resp = Invoke-WebRequest -Uri $articleUrl -UseBasicParsing -TimeoutSec 3 `
-                -Headers @{ "User-Agent" = "Mozilla/5.0" }
-      } catch {
-        $msg = ($_.Exception.Message | Out-String).Trim()
-        $isTimeout = $msg -match "超时|timed out|Timeout"
-        Write-Host "  [取图] 失败 $articleUrl —— $msg" -ForegroundColor Yellow
+      $fetchErr = ""
+      # 源站偶发抖动：同一篇真实文章第一次返回 404、立刻重试就 200（实测复现过）。
+      # 所以失败时重试 1 次（间隔 300ms）；成功就不再重试。
+      # 影响面很小：沉浸浏览只对"当前 ±1"取图，最坏多花一次 3 秒超时，
+      # 前端另有 4 秒兜底超时，不会卡住翻页。
+      for ($attempt = 1; $attempt -le 2; $attempt++) {
+        try {
+          $resp = Invoke-WebRequest -Uri $articleUrl -UseBasicParsing -TimeoutSec 3 `
+                  -Headers @{ "User-Agent" = "Mozilla/5.0" }
+          break
+        } catch {
+          $fetchErr = ($_.Exception.Message | Out-String).Trim()
+          if ($attempt -eq 1) {
+            Write-Host "  [取图] 第 1 次失败，$articleUrl —— $fetchErr（重试一次）" -ForegroundColor Yellow
+            Start-Sleep -Milliseconds 300
+          }
+        }
+      }
+
+      if (-not $resp) {
+        $isTimeout = $fetchErr -match "超时|timed out|Timeout"
+        Write-Host "  [取图] 失败（已重试 1 次）$articleUrl —— $fetchErr" -ForegroundColor Yellow
         Send-Json $ctx @{
           ok = $false
           error = $(if ($isTimeout) { "FETCH_TIMEOUT" } else { "FETCH_FAILED" })
-          message = $(if ($isTimeout) { "抓取超时（3 秒）" } else { "抓取失败：$msg" })
+          message = $(if ($isTimeout) { "抓取超时（3 秒，已重试 1 次）" } else { "抓取失败（已重试 1 次）：$fetchErr" })
           url = $articleUrl
         } -statusCode $(if ($isTimeout) { 504 } else { 502 })
         $ctx.Response.Close()
