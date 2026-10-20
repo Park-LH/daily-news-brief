@@ -36,11 +36,27 @@ const RSS2JSON_TIMEOUT_MS = 15000;
  * @param {string} feedUrl RSS 订阅地址
  * @returns {Array} 新闻数组，每项含 title / link / summary / pubDate
  */
+// file:// 直开的提示只打一次（否则 7 个源会重复 7 行一样的 Console）
+let fileModeHintShown = false;
+
 async function fetchRss(feedUrl) {
   const started = Date.now();
 
   // location 在部分环境（如 node 里做单元测试）可能不存在，做个保护
   const hasServer = typeof location !== "undefined" && location.protocol !== "file:";
+
+  // ---- file:// 直开（双击 index.html）：没有本地服务器，只能走 rss2json ----
+  // 每个源只返回最新 10 条（本地代理能拿到约 30 条），
+  // 科技池候选从约 110 条降到约 40 条，条数明显变少是预期行为，不是故障。
+  if (!hasServer && !fileModeHintShown) {
+    fileModeHintShown = true;
+    console.log(
+      "[RSS] 当前是 file:// 直开（双击 index.html）：没有本地服务器，只能走 rss2json，" +
+      "每个源只返回最新 10 条（用本地代理能拿到约 30 条）。\n" +
+      "[RSS] 因此科技池候选从约 110 条降到约 40 条，各板块条数会明显变少——属正常现象，不是故障。\n" +
+      "[RSS] 想拿全量：请用 start-server.bat 打开页面（启用本地代理）。"
+    );
+  }
 
   // ---- 通道 1：本地代理（http:// 打开时才存在）----
   if (hasServer) {
