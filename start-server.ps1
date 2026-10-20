@@ -53,13 +53,33 @@ $ImageCache = @{}
 # 生成图片要靠 python 调 CodeBuddy 的图片生成脚本，所以先在本机找一个能用的解释器。
 # 找不到也不影响服务器启动，只是 AI 补图不可用（页面会保持干净空位）。
 function Resolve-Python {
-  $candidates = @($env:BUDDY_PYTHON)
+  $candidates = @()
+  # 手动指定优先：setx BUDDY_PYTHON "D:\path\to\python.exe"
+  if ($env:BUDDY_PYTHON) { $candidates += $env:BUDDY_PYTHON }
+
   # CodeBuddy 自带的 python（优先，最稳）
+  #
+  # ⚠️ 这里**不能**用 Get-ChildItem -Recurse：
+  # .workbuddy\binaries\python\versions\<版本号> 是 junction（目录联接），
+  # 而 PowerShell 的 -Recurse 默认不跟随 junction，所以永远扫不到里面的 python.exe
+  # （实测 -Depth 3、-Depth 5、-Force 全部返回 0 个，逐级访问却能找到文件）。
+  # 因此改成**逐级遍历** versions\*\python.exe —— 这个写法实测能找到。
   $wb = Join-Path $env:USERPROFILE ".workbuddy\binaries\python"
   if (Test-Path $wb) {
-    Get-ChildItem $wb -Recurse -Depth 3 -Filter "python.exe" -ErrorAction SilentlyContinue |
-      ForEach-Object { $candidates += $_.FullName }
+    $verDir = Join-Path $wb "versions"
+    if (Test-Path $verDir) {
+      Get-ChildItem $verDir -Directory -Force -ErrorAction SilentlyContinue |
+        ForEach-Object {
+          $exe = Join-Path $_.FullName "python.exe"
+          if (Test-Path $exe) { $candidates += $exe }
+        }
+    }
+    # 万一 python.exe 就在根目录（没走 versions 结构）
+    $rootExe = Join-Path $wb "python.exe"
+    if (Test-Path $rootExe) { $candidates += $rootExe }
   }
+
+  # 最后才试 PATH 里的（WindowsApps 的 python 是空输出占位，会被下面的版本检测挡掉）
   $candidates += @("python", "python3", "py")
 
   foreach ($c in $candidates) {
@@ -171,12 +191,14 @@ if ($lanMode) {
 }
 Write-Host "  停止方法：直接关闭本窗口"
 if ($pythonExe) {
+  Write-Host "  python 探测：$pythonExe" -ForegroundColor DarkGray
   if ($env:BUDDY_CLOUD_TOKEN) {
     Write-Host "  AI 补图：可用（已检测到 python 与生成服务密钥）" -ForegroundColor Green
   } else {
     Write-Host "  AI 补图：未启用（缺生成服务密钥 BUDDY_CLOUD_TOKEN，缺图条目保持干净空位）" -ForegroundColor Yellow
   }
 } else {
+  Write-Host "  python 探测：未找到（可 setx BUDDY_PYTHON 'X:\path\to\python.exe' 手动指定）" -ForegroundColor DarkGray
   Write-Host "  AI 补图：未启用（本机没有可用 python，缺图条目保持干净空位）" -ForegroundColor Yellow
 }
 Write-Host "========================================="
