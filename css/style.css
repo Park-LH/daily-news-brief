@@ -7,7 +7,7 @@
    【z-index 层级规范】—— 新增元素一律按表取用，不要临时猜数字
    ------------------------------------------------------------
    1000  底图       背景、封面大图这类"最底下的图层"
-   1010  内容       压在底图之上的常规内容（分类徽章、占位图标等）
+   1010  内容       压在底图之上的常规内容（分类文字等）
    1020  提示条     常驻提示层：顶部条/退出按钮、操作提示、底部进度条
    2000  遮罩与弹层 全屏遮罩（沉浸浏览）、页面级弹层（底部中文提示）
    ------------------------------------------------------------
@@ -192,24 +192,25 @@ body {
   align-items: flex-start;
 }
 
-/* 新闻配图（左边的封面图） */
+/* 新闻配图（左边的封面图）
+   去装饰：不加边框、不加阴影、不加角标、不加水印，只显示图片本身 */
 .news-thumb {
   flex: 0 0 86px;            /* 固定宽度 86px，不随内容伸缩 */
   height: 86px;
   width: 86px;
-  object-fit: cover;          /* 图片按比例裁剪填满方格，不变形 */
-  border-radius: 10px;
-  box-shadow: 0 2px 8px rgba(15, 23, 42, 0.12);
+  object-fit: cover;          /* 图片按比例裁剪填满方格，不变形（宽高比 1:1） */
+  border-radius: 10px;        /* 圆角只是卡片形状，不是额外贴图 */
+  border: none;
+  box-shadow: none;
+  display: block;
 }
 
-/* 没有配图时的占位样式（🖼️ 图标 + 淡色底） */
-.news-thumb-fallback {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  font-size: 30px;
-  background: linear-gradient(135deg, #fce7f3, #dbeafe);
+/* 还没拿到图时的空位：一块干净的底色，
+   不放 🖼️ 之类的占位图标，也不放渐变等装饰图案 */
+.news-thumb-empty {
+  background: #f1f5f9;
 }
+
 
 /* 右侧文字区域 */
 .news-body { flex: 1; min-width: 0; }
@@ -497,35 +498,55 @@ footer {
   flex-direction: column;
 }
 
-/* 上半部分：封面大图（占屏幕一半以上） */
+/* 上半部分：封面大图（占屏幕一半以上）
+   去装饰：这里只有图片本身，不再叠渐变、角标、占位图标等任何东西 */
 .imm-media {
   position: relative;
   flex: 1 1 54%;               /* 约占 54% 高度，即"上半屏" */
   min-height: 0;
-  background: linear-gradient(135deg, #fce7f3, #dbeafe);  /* 没图时的底色 */
+  /* 默认（拿不到 data-category 时）的兜底底色 */
+  background: linear-gradient(160deg, #1f2937 0%, #111827 100%);
   overflow: hidden;
   z-index: 1000;               /* 底图层，见顶部层级规范表 */
 }
 
-.imm-media img {
+/* ---- 分类渐变底（P6）----
+   中新网 RSS 没有图片字段、约 7 成文章页也没有正文配图，
+   所以"没图"是常态而不是异常：无图时按板块铺一层主题色渐变，
+   用户看到的是有设计感的底色，不是灰白块或占位图标。
+   政治红 / 科技蓝 / 财经金 / 生活粉 */
+.imm-media[data-category="政治"] {
+  background: linear-gradient(160deg, #b91c1c 0%, #7f1d1d 55%, #450a0a 100%);
+}
+.imm-media[data-category="科技"] {
+  background: linear-gradient(160deg, #1d4ed8 0%, #1e3a8a 55%, #0c1a4a 100%);
+}
+.imm-media[data-category="财经"] {
+  background: linear-gradient(160deg, #b45309 0%, #92400e 55%, #451a03 100%);
+}
+.imm-media[data-category="生活"] {
+  background: linear-gradient(160deg, #be185d 0%, #9d174d 55%, #500724 100%);
+}
+
+.imm-media img,
+.imm-media img.imm-cover {
   position: absolute;
   inset: 0;
   width: 100%;
   height: 100%;
-  object-fit: cover;           /* 图片按比例铺满，不会被拉变形 */
+  object-fit: cover;           /* 图片按比例铺满，不会被拉变形（竖幅裁切） */
   display: block;
+  border: none;
+  /* 淡入：先铺渐变底，图片加载完（JS 加 .loaded）再 0.3s 出现，
+     这样抓图慢或失败都不会闪白块 */
+  opacity: 0;
+  transition: opacity 0.3s ease;
 }
 
-/* 没有封面图时的占位（🖼️ 图标），默认显示；有图时被图片盖住 */
-.imm-fallback {
-  position: absolute;
-  inset: 0;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  font-size: 64px;
-  z-index: 1000;               /* 底图层（与封面图同层，可被 img 覆盖） */
+.imm-media img.loaded {
+  opacity: 1;
 }
+
 
 /* 摘要 / 摘抄这两个可滚动文字区
    注意：外层 .immersive 设了 touch-action: none（防止橡皮筋），
@@ -536,28 +557,9 @@ footer {
   -webkit-overflow-scrolling: touch;   /* iOS 上滚动更顺滑 */
 }
 
-/* 图片底部压一层暗色渐变，让叠在上面的文字更清楚 */
-.imm-media::after {
-  content: "";
-  position: absolute;
-  left: 0; right: 0; bottom: 0;
-  height: 45%;
-  background: linear-gradient(to top, rgba(15, 23, 42, 0.6), transparent);
-}
-
-/* 分类小徽章（浮在封面左下角） */
-.imm-badge {
-  position: absolute;
-  left: 16px;
-  bottom: 14px;
-  z-index: 1010;               /* 内容层，见顶部层级规范表 */
-  color: #fff;
-  font-size: 12px;
-  font-weight: 700;
-  padding: 5px 12px;
-  border-radius: 999px;
-  background: rgba(79, 70, 229, 0.9);
-}
+/* （已移除）图片底部的暗色渐变遮罩 与 左下角分类角标：
+   按"简报图只保留干净图片内容"的要求，不再叠加任何系统图案。
+   分类信息改由顶部"专题 · 第 N / M 条"文字承担。 */
 
 /* 下半部分：标题 + 摘要 + 来源时间 + 两个按钮 */
 .imm-info {

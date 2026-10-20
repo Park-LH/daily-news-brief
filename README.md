@@ -54,19 +54,51 @@
 |---|---|---|---|
 | 中国新闻社 | 中新网要闻 | 政治 | https://www.chinanews.com.cn/rss/importnews.xml |
 | 中国新闻社 | 中新网国内 | 政治 | https://www.chinanews.com.cn/rss/china.xml |
-| 中国新闻社 | 中新网滚动 | 科技 | https://www.chinanews.com.cn/rss/scroll-news.xml |
+| 中国新闻社 | 中新网滚动 | 科技池（不单独成板块） | https://www.chinanews.com.cn/rss/scroll-news.xml |
 | 中国新闻社 | 中新网财经 | 财经 | https://www.chinanews.com.cn/rss/finance.xml |
 | 中国新闻社 | 中新网健康 | 生活 | https://www.chinanews.com.cn/rss/health.xml |
 | 中国新闻社 | 中新网生活 | 生活 | https://www.chinanews.com.cn/rss/life.xml |
+| 中国新闻社 | 中新网文化 | 生活 | https://www.chinanews.com.cn/rss/culture.xml |
+
+> 2026-10-20 实测：`culture` 30 条日更、`society` 30 条日更、`edu` 25 条日更、
+> `ent` 空源、`hr` 404；`life` 是低频源（当天 10 条、最新 18:40）不是死源，
+> 停更告警阈值因此设为 4 天（`SOURCE_STALE_DAYS`）。
 
 **准入机制**：`js/config.js` 里的 `AUTHORITATIVE_MEDIA` 是权威媒体白名单，
 抓取前由 `getEnabledSources()` 逐个核对——不在名单里、或 `official` 不为 true 的源一律跳过并在控制台告警。
-中新网没有独立科技频道，因此科技板块用「中新网滚动」+ `TECH_KEYWORDS` 关键词筛选（现 49 词）。
+中新网没有独立科技频道，因此科技板块用「**多频道科技池**」：
+把 `TECH_POOL_SOURCES`（要闻 / 国内 / 财经 / 滚动）的条目合并后，
+再用 `TECH_KEYWORDS`（29 词）筛科技。**只匹配标题，不匹配摘要**
+（匹配摘要时 9 条里约 4 条是误命中）。过宽的"数字/数据/网络"已删除，
+"AI""5G" 按独立词匹配（AIGC、CAI 不算命中）。
 
-> ⚠️ 已知限制（2026-10-19 实测）：滚动频道是**约 1 小时的滚动窗口**（实测 30 条跨 59 分钟），
-> 而 rss2json 只返回最新 10 条（约 20 分钟窗口），所以科技板块实际只在 10 条里挑科技新闻，
-> 当日实测命中 4/30（约 13%），落到 10 条窗口里期望值只有约 1 条。
-> 根因是**候选池太小，不是关键词不够**（32 词与 49 词在同一批快照上命中数相同）。
+> 池子合并后必须做三件事，否则会出问题：
+> ① 去重：先按 link 去重，再按标题相似度去重（共同前缀 ≥14 字或 Jaccard ≥0.85），
+>    实测存在 link 不同、标题只差一两个字的同稿；被判重复的"标题对"会打印在 Console 供核对。
+> ② 板块互斥，优先级 科技 > 财经 > 政治 > 生活（同一条新闻只归一个板块）
+> ③ 排除词：命中科技词但标题含 政治化 / 外交部发言人 / 双开 / 落马 / 被查 / 问责 /
+>    宣讲 / 会见 / 会谈 / 致电 / 贺信 的，打回原板块（如"将科技经贸问题政治化"是时政不是科技）。
+>    注意：不要加"商务部/通报/答记者问"——会误杀「商务部：…智能眼镜销售额增长1.1倍」这类真科技稿。
+> 详见 `js/app.js` 的 `dedupeAndAssignCategories()`，Console 会打印每步条数。
+
+> 配额在 `js/config.js` 的 `CATEGORY_QUOTA = { 政治:4, 科技:6, 财经:4, 生活:4 }`，
+> 列表页与沉浸浏览共用这一张表（`categoryQuota()`），不要再散落硬编码。
+> 板块内还有一道"每个源最多 `MAX_PER_SOURCE_IN_CATEGORY`（2）条"的限流
+> （多源板块才生效，单一来源板块不限），用轮询方式分配，避免更新最密的源霸占板块。
+
+### 封面图（/api/image）
+
+中新网 RSS 没有图片字段、文章页也没有 og:image，正文配图只能服务端抓文章页取：
+
+- 接口：`/api/image?url=<文章页>`（`start-server.ps1` 接口 3）
+- **只认 `/simg/cmshd/` 路径的正文配图**（实测 10 篇里约 3 篇有）；
+  侧栏图（`_zsite` / `_zsite_sl` / `_700x1000`）跨文章重复，一律排除，
+  取不到就返回 `image: null`，**不退而求其次**
+- 入参必须是文章页（路径含 `YYYY/MM-DD/数字.shtml`），频道首页直接 `400 NOT_ARTICLE`
+- 文章页域名白名单、24h 内存缓存、3 秒超时、只返回图片 URL
+- 前端只对沉浸式"当前 ±1"调用（`js/app.js` 的 `requestArticleCover` / `preloadNeighborImages`），
+  失败静默降级：无图时铺分类渐变底（政治红 / 科技蓝 / 财经金 / 生活粉），
+  图片 onload 后 0.3s 淡入，不出现白块或占位图标
 
 > 想加/换新闻源：打开 `js/config.js`，先确认媒体机构在 `AUTHORITATIVE_MEDIA` 白名单里，
 > 再往 `RSS_SOURCES` 里加一项（非权威来源会被自动拦截）。
@@ -96,7 +128,10 @@ daily-news-brief/
 ## 🛠 技术说明
 
 - **技术栈**：原生 HTML / CSS / JavaScript，无框架、无构建步骤
-- **数据抓取**：通过免费公共接口 [rss2json](https://rss2json.com) 把 RSS 转成 JSON
+- **数据抓取**：**本地代理优先 + rss2json 降级**——
+  优先走 `start-server.ps1` 的 `/api/feed`（服务端直抓源站，能拿到全部 27~30 条，
+  且不受 rss2json 限制）；服务器没启动时自动降级到公共接口
+  [rss2json](https://rss2json.com)（只返回最新 10 条）；再失败给中文提示
 - **AI 摘要**：已预留接口 `js/config.js` 中的 `generateSummary()`，
   目前直接返回 RSS 自带摘要，以后接入 AI 只需改这一个函数
 - **数据存储**：用服务器启动时写入 `.data/stats.json`（换浏览器也不丢）；
@@ -106,12 +141,17 @@ daily-news-brief/
 
 ## 🗺 开发进度（沉浸浏览改造）
 
-| 阶段 | 内容 | 状态 |
-|---|---|---|
-| 阶段 1 | 竖屏全屏卡片布局 | ✅ 已完成 |
-| 阶段 2 | 上下翻页（滚轮 / ↑↓ 方向键 / 循环） | ✅ 已完成 |
-| 阶段 3 | 移动端手势滑动 | ⏳ 待开发 |
-| 阶段 4 | 视图切换开关 + 打磨 | ⏳ 待开发 |
+| 阶段 | 内容 | 状态 | 提交 |
+|---|---|---|---|
+| 阶段 1 | 竖屏全屏卡片布局 | ✅ 已完成 | `0dfb068` |
+| 阶段 2 | 上下翻页（滚轮 / ↑↓ 方向键 / 循环） | ✅ 已完成 | `e06cc2f` `c7419b1` |
+| 阶段 3 | 移动端手势滑动（跟手 / 半途停住 / 防误触 / 统一锁） | ✅ 已完成 | `1646fff` `b69f9c8` |
+| 阶段 4 | 视图切换开关 + 打磨 | ✅ 已完成 | `1646fff` |
+
+> 阶段 4 完成时一并做了：手机滑动翻页、视图切换开关（`getSavedView()` /
+> `saveView()` / `setView()`）、`height: 100dvh`（含 `@supports` 兜底）。
+> 后续又提交了两项：权威媒体白名单 + 中新网源（`02d02bb`）、
+> 后端 RSS 代理 + 前端三级降级（`03bb8c0`）。
 
 ---
 

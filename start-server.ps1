@@ -6,10 +6,10 @@
 #   可以监听浏览器请求并把项目文件发回去，不需要安装任何软件。
 # 用法：双击 start-server.bat（它会自动调用本文件）
 #
-# 本服务器提供三类服务：
+# 本服务器提供四类服务：
 #   1. 静态文件：把 html/css/js 文件发给浏览器
 #   2. 数据接口：/api/stats —— 保存和读取历史统计数据（存 .data/stats.json）
-#   3. RSS 代理：/api/feed —— 服务端代抓 RSS（解决 rss2json 只返回 10 条的限制）
+#   4. RSS 代理：/api/feed —— 服务端代抓 RSS（解决 rss2json 只返回 10 条的限制）
 
 $root = Split-Path -Parent $MyInvocation.MyCommand.Path
 $port = 8019
@@ -30,6 +30,23 @@ $buildId = Get-Date -Format "yyyyMMdd"
 # 就等于开放了一个任意 URL 代理，局域网内谁都能借它访问外网任意地址。
 # 要接入新的官方媒体，把它的域名加进这个数组即可。
 $ALLOWED_FEED_HOSTS = @("chinanews.com.cn")
+
+# ---------- /api/image 用的白名单与缓存 ----------
+# 文章页域名：只放行中新网（与 RSS 同一个媒体机构）
+$ALLOWED_ARTICLE_HOSTS = @("www.chinanews.com.cn", "chinanews.com.cn")
+# 文章页必须"整体"长这样：
+#   https://www.chinanews.com.cn/gn/2026/10-20/10718054.shtml
+# 频道首页（/importnews.html）、栏目页（/photo.html）都不算文章页，
+# 实测 RSS 里会混进频道首页，不校验就会拿列表缩略图当封面。
+#
+# ⚠️ 必须**整体锚定**（^...$），不能只匹配一段子串：
+# 实测旧版裸正则 '\d{4}/\d{1,2}-\d{1,2}/\d+\.shtml' 能被查询串绕过——
+#   https://www.chinanews.com.cn/?x=2026/10-20/10718054.shtml
+# 主机名是合法白名单域名、子串匹配命中，于是 200 并真的去抓了首页。
+$ARTICLE_URL_PATTERN = '^https?://(?:www\.)?chinanews\.com\.cn(?:/[a-z0-9-]{2,10})*/\d{4}/\d{1,2}-\d{1,2}/\d+\.shtml/?$'
+# 24 小时内存缓存：沉浸浏览来回翻页会重复请求同一篇，没必要每次都抓
+$IMAGE_CACHE_HOURS = 24
+$ImageCache = @{}
 
 # ---------- 启动前 1：探测本机局域网 IP（给手机访问用）----------
 # 优先取 192.168.* 这类家庭/办公网段地址，取不到再退到其他内网地址
@@ -273,13 +290,15 @@ while ($listener.IsListening) {
       [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
       $resp = $null
       try {
-        $resp = Invoke-WebRequest -Uri $feedUrl -UseBasicParsing -TimeoutSec 15 `
+        # 超时 8 秒：要和前端代理超时（rss.js 的 FEED_PROXY_TIMEOUT_MS = 10 秒）配套，
+        # 后端必须比前端先放弃，否则前端先超时就白降级到只有 10 条的 rss2json 了。
+        $resp = Invoke-WebRequest -Uri $feedUrl -UseBasicParsing -TimeoutSec 8 `
                 -Headers @{ "User-Agent" = "Mozilla/5.0" }
       } catch {
         $msg = ($_.Exception.Message | Out-String).Trim()
         $isTimeout = $msg -match "超时|timed out|Timeout"
         $errCode = if ($isTimeout) { "FETCH_TIMEOUT" } else { "FETCH_FAILED" }
-        $errMsg  = if ($isTimeout) { "抓取超时（15 秒）" } else { "抓取失败：$msg" }
+        $errMsg  = if ($isTimeout) { "抓取超时（8 秒）" } else { "抓取失败：$msg" }
         Write-Host "  [RSS代理] 失败 $feedUrl —— $errMsg" -ForegroundColor Yellow
         Send-Json $ctx @{ ok = $false; error = $errCode; message = $errMsg; url = $feedUrl } `
                   -statusCode $(if ($isTimeout) { 504 } else { 502 })
@@ -349,7 +368,149 @@ while ($listener.IsListening) {
       continue
     }
 
-    # ===== 接口 3：静态文件 =====
+    # ===== 接口 3：/api/image 取文章页的正文配图（GET /api/image?url=...）=====
+    # 为什么需要它：中新网 RSS 完全没有图片字段（enclosure / media:content /
+    # media:thumbnail / <img> 实测全部为 0），文章页也没有 og:image（实测索引 -1），
+    # 只有文章正文里配了图。沉浸浏览的全屏封面只能从这里拿。
+    #
+    # 取图规则（2026-10-20 实测 10 篇真实文章）：
+    #   ① 只认 /simg/cmshd/ 下的图 —— 这才是真正的正文配图（10 篇里 3 篇有）
+    #   ② 取不到就返回 image=$null，前端铺分类渐变底，**不**退而求其次取侧栏图：
+    #      实测侧栏图（_zsite / _zsite_sl / _700x1000_zsite_sl）会跨文章重复出现，
+    #      同一张 ff77d5fb…_700x1000_zsite_sl.jpeg 同时出现在多篇不同文章里
+    #   ③ 入参必须是文章页（路径匹配 YYYY/MM-DD/数字.shtml），
+    #      频道首页（如 http://www.chinanews.com/importnews.html）直接
+    #      400 NOT_ARTICLE，一个字节都不往外发
+    #
+    # 返回：{ ok, url, image, cached }（image 为 null = 这篇没有正文配图，走渐变底）
+    if ($path -eq "/api/image") {
+      if ($ctx.Request.HttpMethod -ne "GET") {
+        Send-Json $ctx @{ ok = $false; error = "METHOD_NOT_ALLOWED"; message = "请用 GET" } -statusCode 405
+        $ctx.Response.Close()
+        continue
+      }
+
+      # ---- 第 0 步：取 url 参数 ----
+      $articleUrl = ""
+      if ($ctx.Request.QueryString["url"]) {
+        $articleUrl = ($ctx.Request.QueryString["url"] | Out-String).Trim()
+      }
+      if ([string]::IsNullOrEmpty($articleUrl)) {
+        Send-Json $ctx @{ ok = $false; error = "MISSING_URL"
+                          message = "缺少 url 参数，例：/api/image?url=<文章页地址>" } -statusCode 400
+        $ctx.Response.Close()
+        continue
+      }
+
+      # ---- 第 1 步：域名白名单 ----
+      $artHost = ""
+      try { $artHost = ([Uri]$articleUrl).Host } catch { $artHost = "" }
+      if ($ALLOWED_ARTICLE_HOSTS -notcontains $artHost) {
+        Send-Json $ctx @{
+          ok = $false; error = "DOMAIN_NOT_ALLOWED"
+          message = "只允许抓取白名单域名的文章页（当前允许：$($ALLOWED_ARTICLE_HOSTS -join '、')）"
+          host = $artHost
+        } -statusCode 403
+        $ctx.Response.Close()
+        continue
+      }
+
+      # ---- 第 2 步：必须是文章页（频道首页/栏目页一律拒绝，不发起抓取）----
+      # 先剥掉 ? 查询串 与 # 锚点再匹配：否则
+      # https://www.chinanews.com.cn/?x=2026/10-20/10718054.shtml
+      # 会靠子串匹配骗过裸正则，把频道首页当文章页抓（2026-10-20 实测复现）。
+      # 正常文章链接带追踪参数时也能通过（剥掉后仍是文章页形态）。
+      $articlePath = $articleUrl -replace '[?#].*$', ''
+      if ($articlePath -notmatch $ARTICLE_URL_PATTERN) {
+        Send-Json $ctx @{
+          ok = $false; error = "NOT_ARTICLE"
+          message = "不是文章页（文章页路径形如 /gn/2026/10-20/10718054.shtml），已拒绝抓取"
+          url = $articleUrl
+        } -statusCode 400
+        $ctx.Response.Close()
+        continue
+      }
+
+      # ---- 第 3 步：命中缓存就直接返回（24 小时内不重复抓）----
+      if ($ImageCache.ContainsKey($articleUrl)) {
+        $entry = $ImageCache[$articleUrl]
+        $ageHours = ((Get-Date) - $entry.time).TotalHours
+        if ($ageHours -lt $IMAGE_CACHE_HOURS) {
+          Send-Json $ctx @{ ok = $true; url = $articleUrl; image = $entry.image; cached = $true }
+          $ctx.Response.Close()
+          continue
+        }
+        $ImageCache.Remove($articleUrl)
+      }
+
+      # ---- 第 4 步：抓页面（超时 3 秒，比 RSS 抓取的 8 秒更严）----
+      # 3 秒的依据：实测文章页 41~93ms 就返回（平均 63ms），
+      # 3 秒已经是很宽松的上限；慢了就放弃，前端铺渐变底。
+      [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+      $resp = $null
+      try {
+        $resp = Invoke-WebRequest -Uri $articleUrl -UseBasicParsing -TimeoutSec 3 `
+                -Headers @{ "User-Agent" = "Mozilla/5.0" }
+      } catch {
+        $msg = ($_.Exception.Message | Out-String).Trim()
+        $isTimeout = $msg -match "超时|timed out|Timeout"
+        Write-Host "  [取图] 失败 $articleUrl —— $msg" -ForegroundColor Yellow
+        Send-Json $ctx @{
+          ok = $false
+          error = $(if ($isTimeout) { "FETCH_TIMEOUT" } else { "FETCH_FAILED" })
+          message = $(if ($isTimeout) { "抓取超时（3 秒）" } else { "抓取失败：$msg" })
+          url = $articleUrl
+        } -statusCode $(if ($isTimeout) { 504 } else { 502 })
+        $ctx.Response.Close()
+        continue
+      }
+
+      # ---- 第 5 步：按页面声明的编码解出 HTML（中文不乱码）----
+      $ms2 = New-Object IO.MemoryStream
+      try { $resp.RawContentStream.Position = 0; $resp.RawContentStream.CopyTo($ms2) } catch { }
+      $htmlBytes = $ms2.ToArray()
+      $headTxt = [Text.Encoding]::ASCII.GetString($htmlBytes, 0, [Math]::Min(2000, $htmlBytes.Length))
+      $htmlEnc = [Text.Encoding]::UTF8
+      if ($headTxt -match 'charset\s*=\s*["'']?gb') {
+        try { $htmlEnc = [Text.Encoding]::GetEncoding("GB2312") } catch { $htmlEnc = [Text.Encoding]::UTF8 }
+      }
+      $html = $htmlEnc.GetString($htmlBytes)
+
+      # ---- 第 6 步：只在正文区里找 /simg/cmshd/ 的第一张 ----
+      $cIdx = $html.IndexOf('class="content"')
+      $body = ""
+      if ($cIdx -ge 0) {
+        $len = [Math]::Min(40000, $html.Length - $cIdx)
+        $body = $html.Substring($cIdx, $len)
+      }
+
+      $image = $null
+      if ($body.Length -gt 0) {
+        $m = [regex]::Match($body, '//i\d*\.chinanews\.com\.cn/simg/cmshd/[^"''\s>]+')
+        if ($m.Success) {
+          $cand = $m.Value
+          # 排除清单：模板图 / 侧栏图 / 缩略图标记
+          if ($cand -notmatch 'fileftp' -and $cand -notmatch '_zsite' -and $cand -notmatch '_700x1000') {
+            # 相对协议 //i2... 补成 https://i2...
+            if ($cand.StartsWith("//")) { $cand = "https:" + $cand }
+            # 图片域名再校验一遍（防页面里出现别的域名的图）
+            $imgHost = ""
+            try { $imgHost = ([Uri]$cand).Host } catch { $imgHost = "" }
+            if ($imgHost -match '^i\d*\.chinanews\.com\.cn$') { $image = $cand }
+          }
+        }
+      }
+
+      Write-Host "  [取图] $($articleUrl.Split('/')[-1]) → $(if ($image) { $image } else { '无正文配图（走渐变底）' })"
+
+      # ---- 第 7 步：写缓存并返回（只给 URL，不给 base64）----
+      $ImageCache[$articleUrl] = @{ time = (Get-Date); image = $image }
+      Send-Json $ctx @{ ok = $true; url = $articleUrl; image = $image; cached = $false }
+      $ctx.Response.Close()
+      continue
+    }
+
+    # ===== 接口 4：静态文件 =====
     if ($path -eq "/") { $path = "/index.html" }
 
     # 拼出本地文件路径，并检查它确实在项目文件夹里（安全防护）

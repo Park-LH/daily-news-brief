@@ -51,6 +51,9 @@ function safeUrl(url) {
 let latestNews = [];
 let immIndex = 0;
 
+// 列表页当前显示的新闻（配图补图时按 id 反查用）
+let shownNews = [];
+
 // 页面打开时，在页头显示今天的日期
 $("dateText").textContent = new Date().toLocaleDateString("zh-CN", {
   year: "numeric", month: "long", day: "numeric", weekday: "long",
@@ -111,10 +114,12 @@ function renderCategory(category, newsList) {
     return `
     <article class="news-item">
       ${img
-        ? `<img class="news-thumb" src="${escapeHtml(img)}" alt="新闻配图"
-             loading="lazy"
-             onerror="this.outerHTML='<div class=\\'news-thumb news-thumb-fallback\\'>🖼️</div>'">`
-        : `<div class="news-thumb news-thumb-fallback">🖼️</div>`}
+        // 有图：直接显示，不放任何角标/边框/水印等装饰
+        ? `<img class="news-thumb" data-news-id="${escapeHtml(news.id)}"
+             src="${escapeHtml(img)}" alt="新闻配图" loading="lazy">`
+        // 无图：留一块干净的空位（不再是 🖼️ 占位图标）
+        : `<div class="news-thumb news-thumb-empty"
+             data-news-id="${escapeHtml(news.id)}"></div>`}
       <div class="news-body">
         <a href="${escapeHtml(link)}" target="_blank" rel="noopener">${escapeHtml(news.title)}</a>
         <div class="summary">${escapeHtml(news.summary || "（这条新闻没有自带摘要，点击标题查看原文）")}</div>
@@ -126,6 +131,18 @@ function renderCategory(category, newsList) {
     </article>
   `;
   }).join("");
+
+  // 源图打不开（链接失效、防盗链等）时：
+  // 换成一块干净的空位（不再放 🖼️ 占位图标），再交给 AI 生成补一张
+  list.querySelectorAll("img.news-thumb").forEach(el => {
+    el.addEventListener("error", () => {
+      const box = document.createElement("div");
+      box.className = "news-thumb news-thumb-empty";
+      if (el.dataset.newsId) box.dataset.newsId = el.dataset.newsId;
+      el.replaceWith(box);
+
+    });
+  });
 }
 
 /* ============================================================
@@ -134,10 +151,99 @@ function renderCategory(category, newsList) {
    正式的视图切换开关（阶段4）
    ============================================================ */
 
+/* ============================================================
+   封面图：/api/image 取正文配图（失败静默降级到分类渐变底）
+   ============================================================ */
+
+// 文章页形态（整体锚定）：https://www.chinanews.com.cn/gn/2026/10-20/10718054.shtml
+// 频道首页（/importnews.html）不匹配 —— 它里面有列表缩略图，会被误当封面。
+// ⚠️ 必须整体锚定（^...$）+ 先剥掉 ? 查询串：
+// 旧版裸 /\d{4}\/\d{1,2}-\d{1,2}\/\d+\.shtml/ 会被
+// https://www.chinanews.com.cn/?x=2026/10-20/10718054.shtml 的子串命中绕过
+// （2026-10-20 实测复现：服务端 200 并真去抓了频道首页）。
+const ARTICLE_URL_RE =
+  /^https?:\/\/(?:www\.)?chinanews\.com\.cn(?:\/[a-z0-9-]{2,10})*\/\d{4}\/\d{1,2}-\d{1,2}\/\d+\.shtml\/?$/i;
+const ARTICLE_HOSTS = ["www.chinanews.com.cn", "chinanews.com.cn"];
+const IMAGE_API_PATH = "/api/image";
+const IMAGE_API_TIMEOUT_MS = 4000;   // 服务端自己 3 秒就放弃，这里只是兜底
+
+/**
+ * 判断一个链接是不是"文章页"
+ * 不是文章页就不请求 /api/image——省一次往返，也避免拿到频道页的列表缩略图
+ */
+function isArticleUrl(url) {
+  if (!/^https?:\/\//i.test(url || "")) return false;
+  // 剥掉 ? 查询串 与 # 锚点：否则 ?x=2026/10-20/10718054.shtml 这类尾巴
+  // 会让子串匹配把频道首页误判成文章页（与后端同一套规则）。
+  const clean = String(url).replace(/[?#].*$/, "");
+  let host = "";
+  try { host = new URL(clean).host; } catch (e) { return false; }
+  if (!ARTICLE_HOSTS.includes(host)) return false;
+  return ARTICLE_URL_RE.test(clean);
+}
+
+/**
+ * 向 /api/image 要这条新闻的正文配图
+ *
+ * 取不到（文章本来没配图 / 超时 / 源站报错）一律静默返回 null，
+ * 页面保持分类渐变底，不放任何占位图标。每条只请求一次（imageApiDone 标记）。
+ *
+ * @returns {Promise<string|null>} 图片地址，拿不到就是 null
+ */
+async function fetchArticleImage(news) {
+  if (!news || news.imageApiDone) return news && news.image ? news.image : null;
+  news.imageApiDone = true;
+
+  if (!isArticleUrl(news.link)) return null;   // 非文章页直接不发请求
+
+  if (typeof location !== "undefined" && location.protocol === "file:") return null; // 没服务器
+
+  const started = Date.now();
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), IMAGE_API_TIMEOUT_MS);
+  try {
+    const r = await fetch(`${IMAGE_API_PATH}?url=${encodeURIComponent(news.link)}`,
+                          { signal: ctrl.signal });
+    if (!r.ok) return null;
+    const data = await r.json();
+    const img = (data && data.ok && data.image) ? data.image : null;
+    console.log(`[取图] ${(news.title || "").slice(0, 16)}… → `
+      + (img ? img : "无正文配图（走渐变底）") + ` · ${Date.now() - started}ms`
+      + (data && data.cached ? " · 命中缓存" : ""));
+    if (img) news.image = img;
+    return img;
+  } catch (e) {
+    console.log(`[取图] 失败，静默降级到渐变底：${e.message}`);
+    return null;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+/**
+ * 异步取图，拿到后如果这条还停在当前页，就把封面淡入到卡片上
+ * （P6：无图时卡片已经是分类渐变底，图片 onload 后 0.3s 淡入，不会闪白）
+ */
+async function requestArticleCover(news) {
+  const img = await fetchArticleImage(news);
+  if (!img || !latestNews.length) return;
+  if (latestNews[immIndex] !== news) return;    // 用户已经翻走了，不动 DOM
+  const media = document.querySelector(".imm-media");
+  if (!media || media.querySelector("img")) return;
+  const el = new Image();
+  el.className = "imm-cover";
+  el.alt = "新闻封面";
+  el.onload = () => el.classList.add("loaded");  // 加载完才淡入（见 style.css）
+  el.onerror = () => el.remove();                // 打不开就撤掉，留渐变底
+  el.src = img;
+  media.appendChild(el);
+}
+
 /**
  * 预加载封面图：提前把"后 2 条 + 前 1 条"的图片下载好，
  * 这样手指滑过去时不会先白一下才出图。
- * 加载失败不用管——卡片里有 onerror，会自动露出 🖼️ 占位。
+ * 另外对"当前 ±1"各调一次 /api/image（不全量抓，只备相邻两条）。
+ * 加载失败不用管——卡片里保留分类渐变底，不会出现占位图标。
  */
 function preloadNeighborImages() {
   const total = latestNews.length;
@@ -151,25 +257,77 @@ function preloadNeighborImages() {
     img.onerror = () => {};       // 失败就失败，不影响使用
     img.src = url;
   });
+
+  // 只对"前一条 / 后一条"补取正文配图（当前这条由 renderImmersiveCard 负责）
+  [1, -1].forEach(offset => {
+    const news = latestNews[(immIndex + offset + total) % total];
+    if (news) fetchArticleImage(news);
+  });
 }
 
 /**
- * 挑出「列表页」要显示的新闻：每个专题各取前 MAX_NEWS_PER_CATEGORY 条
+ * 挑出「列表页」要显示的新闻：每个板块各取 CATEGORY_QUOTA 里配的条数
  *
  * 为什么不直接取"全局最新 N 条"：政治源（中新网）更新很密，
  * 一口气就能把名额占满，其他专题会被挤成空板块。
- * 给每个专题留配额，四个板块就都有内容。
+ * 给每个板块留配额，四个板块就都有内容。
+ * 配额统一在 config.js 的 CATEGORY_QUOTA 里改，不要在这里写死数字。
  *
  * @param {Array} sortedNews 已按时间从新到旧排好序的新闻数组
  * @returns {Array} 列表页要显示的数组（仍按时间从新到旧）
  */
+/**
+ * 在一个板块内挑新闻：先按板块配额，再按"每个源最多几条"限流
+ *
+ * 为什么要限每个源：更新最密的源会把整个板块占满。
+ * 实测生活板块前 5 条全部来自「中新网文化」（日更 30 条），
+ * 健康 / 生活两个源一条都进不来 —— 板块叫"生活"，内容却只有文化新闻。
+ * 限流后同一源在一个板块里最多出 MAX_PER_SOURCE_IN_CATEGORY 条。
+ *
+ * @param {Array}  sortedNews 已按时间从新到旧排好序的新闻
+ * @param {string} category   板块名
+ * @returns {Array} 该板块要显示的新闻
+ */
+function pickCategoryNews(sortedNews, category) {
+  const quota = categoryQuota(category);
+
+  // 按源分组（组内保持时间顺序）
+  const bySource = new Map();
+  for (const news of sortedNews) {
+    if (news.category !== category) continue;
+    if (!bySource.has(news.source)) bySource.set(news.source, []);
+    bySource.get(news.source).push(news);
+  }
+
+  // 单一来源的板块（比如"财经"目前只有中新网财经一个源）不做限流：
+  // 限了也还是它一家，只会把板块从 4 条砍成 2 条。
+  const cap = bySource.size > 1 ? MAX_PER_SOURCE_IN_CATEGORY : quota;
+
+  // 轮询分配：每个源先各出 1 条，再各出第 2 条……
+  // 比"顺序遍历 + 硬截断"更好——既保证多源都露脸，又不会因为
+  // 头部几个源就把名额用光导致板块提前填不满。
+  const used = new Map();
+  const picked = [];
+  while (picked.length < quota) {
+    let added = false;
+    for (const [src, arr] of bySource) {
+      if (picked.length >= quota) break;
+      const n = used.get(src) || 0;
+      if (n >= Math.min(cap, arr.length)) continue;   // 这个源已到上限
+      used.set(src, n + 1);
+      picked.push(arr[n]);
+      added = true;
+    }
+    if (!added) break;                                 // 所有源都取完了
+  }
+  return picked;
+}
+
 function buildListNews(sortedNews) {
   const CATEGORY_ORDER = ["政治", "科技", "财经", "生活"];
   const list = [];
   for (const category of CATEGORY_ORDER) {
-    list.push(...sortedNews
-      .filter(n => n.category === category)
-      .slice(0, MAX_NEWS_PER_CATEGORY));
+    list.push(...pickCategoryNews(sortedNews, category));
   }
   // 拼好后重新按时间排一次，页面上的顺序仍是"最新在前"
   list.sort((a, b) => new Date(b.pubDate) - new Date(a.pubDate));
@@ -177,10 +335,185 @@ function buildListNews(sortedNews) {
 }
 
 /**
+ * 去重 + 板块互斥 + 科技池归类（多频道池的关键一步）
+ *
+ * 三件事，缺一不可：
+ *   1）按 link 去重：四个频道合并后，同一条新闻常被多个频道重复收录
+ *      （实测 120 条里 22 条 URL 完全重复，约 18%），不去重会重复展示。
+ *   2）板块互斥：一条新闻只能归一个板块，优先级 科技 > 财经 > 政治 > 生活。
+ *      来自科技池、且**标题**命中科技关键词的 → 科技；
+ *      其余按来源频道本来的板块（财经 / 政治 / 生活）。
+ *      这样科技池抽走财经频道的科技稿时，财经板块不会再留同一条，
+ *      不会出现"同一条新闻两个板块都有"。
+ *   3）Console 打印每一步的条数，方便核对。
+ *
+ * @param {Array} newsList 已按时间过滤、但还没去重的新闻数组
+ * @returns {Array} 去重并定好板块的数组（仍保持传入顺序）
+ */
+/**
+ * 标题归一化：去掉空白与标点，只留汉字/字母/数字，供"标题相似度"比对用
+ * 例：「我国在脑机接口领域…」和「中国在脑机接口领域…」归一化后只差前两字
+ */
+function normalizeTitle(title) {
+  return String(title || "")
+    .replace(/[\s\u3000]/g, "")
+    .replace(/[，。、；：？！“”‘’（）《》〈〉·…\-—_,.:;?!'"()[\]{}|/\\]/g, "");
+}
+
+/**
+ * 判断两条标题是不是同一篇稿子
+ *
+ * 两个条件满足其一就算重复：
+ *   ① 共同前缀 ≥ 14 字（去标点后）——同一篇稿子换个频道发，常只改开头
+ *      （"我国/中国""XX 报道："这类），共同前缀很长。
+ *   ② 二元字符组 Jaccard 相似度 ≥ 0.85——同一篇稿子被改了开头几个字的情况。
+ *
+ * 不用"前 12 字完全相同"：系列报道（…之一/之二）会被误删，实测风险太高。
+ */
+function isSimilarTitle(normA, normB) {
+  if (!normA || !normB) return false;
+
+  // ① 共同前缀
+  let same = 0;
+  const min = Math.min(normA.length, normB.length);
+  while (same < min && normA[same] === normB[same]) same++;
+  let similar = same >= 14;
+
+  // ② Jaccard（按相邻两字切分，中文按字切太粗、按词切要分词库）
+  if (!similar) {
+    const setA = new Set();
+    const setB = new Set();
+    for (let i = 0; i + 1 < normA.length; i++) setA.add(normA.slice(i, i + 2));
+    for (let i = 0; i + 1 < normB.length; i++) setB.add(normB.slice(i, i + 2));
+    let inter = 0;
+    setA.forEach(g => { if (setB.has(g)) inter++; });
+    const union = setA.size + setB.size - inter;
+    similar = union > 0 && inter / union >= 0.85;
+  }
+
+  // ③ 系列报道豁免：相似，但差异点正好落在序列标记上（之一/之二、第1篇/第2篇…）
+  //    属于同一系列的不同篇，不是同稿重复，不能删。
+  //    实测反例：「第三届粤港澳大湾区文化艺术节系列活动之一开幕」vs「…之二开幕」，
+  //    共同前缀 19 字、Jaccard 也远超 0.85，不豁免就会被误删一条。
+  if (similar) {
+    let k = 0;
+    const m = Math.min(normA.length, normB.length);
+    while (k < m && normA[k] === normB[k]) k++;
+    const restA = normA.slice(k);
+    const restB = normB.slice(k);
+    const seq = /^[一二三四五六七八九十\d]/;
+    if (seq.test(restA) && seq.test(restB) && restA[0] !== restB[0]) return false;
+  }
+
+  return similar;
+}
+
+/**
+ * 去重 + 板块互斥 + 科技池归类（多频道池的关键一步）
+ *
+ * 三件事，缺一不可：
+ *   1）去重，两轮：
+ *      a. 按 link 完全去重（同一条新闻被多个频道收录时 link 相同）
+ *      b. 标题相似度去重（实测存在 link 不同、标题只差一两个字的同稿，
+ *         如「我国在脑机接口领域…」与「中国在脑机接口领域…」）
+ *      被判重复的"标题对"会整对打印出来，方便人工核对有没有误删。
+ *   2）板块互斥：一条新闻只能归一个板块，优先级 科技 > 财经 > 政治 > 生活。
+ *      来自科技池、且**标题**命中科技关键词、且不含排除词的 → 科技；
+ *      其余按来源频道本来的板块（财经 / 政治 / 生活）。
+ *   3）Console 打印每一步的条数，方便核对。
+ *
+ * @param {Array} newsList 已按时间过滤、但还没去重的新闻数组
+ * @returns {Array} 去重并定好板块的数组（仍保持传入顺序）
+ */
+function dedupeAndAssignCategories(newsList) {
+  // ---- 1. 去重：link 完全重复 + 标题相似重复 ----
+  const seenLinks = new Map();     // link → 已保留的标题（打印重复对时用）
+  const list = [];
+  const dupPairs = [];             // [被丢掉的标题, 已保留的标题]
+  let linkDup = 0, titleDup = 0;
+
+  for (const news of newsList) {
+    const link = (news.link || "").trim();
+    const norm = normalizeTitle(news.title);
+    if (!link && !norm) continue;
+
+    if (link && seenLinks.has(link)) {
+      dupPairs.push([news.title, seenLinks.get(link), "link 相同"]);
+      linkDup++;
+      continue;
+    }
+    let similarTo = null;
+    for (const kept of list) {
+      if (isSimilarTitle(norm, normalizeTitle(kept.title))) { similarTo = kept; break; }
+    }
+    if (similarTo) {
+      dupPairs.push([news.title, similarTo.title, "标题相似"]);
+      titleDup++;
+      continue;
+    }
+
+    if (link) seenLinks.set(link, news.title);
+    list.push(news);
+  }
+
+  console.log(`[去重] ${newsList.length} 条 → ${list.length} 条`
+    + `（去掉 ${newsList.length - list.length} 条：link 重复 ${linkDup} 条、标题相似 ${titleDup} 条）`);
+  if (dupPairs.length) {
+    console.log(`[去重] 被判为重复的标题对（共 ${dupPairs.length} 对，供人工核对）：`);
+    dupPairs.forEach(([dropped, kept, why], i) => {
+      console.log(`   ${i + 1}. [${why}] 丢弃：${dropped}`);
+      console.log(`      保留：${kept}`);
+    });
+  } else {
+    console.log("[去重] 本次没有判出重复条目");
+  }
+
+  // ---- 2. 板块互斥：科技优先，命中但含排除词的打回原板块 ----
+  const poolCount = list.filter(n => n.inTechPool).length;
+  const excluded = [];
+  let techCount = 0;
+  for (const news of list) {
+    if (!news.inTechPool) continue;                 // 不在池里的保持原板块
+
+    const hitTech = filterByKeywords([news], TECH_KEYWORDS).length > 0;
+    if (!hitTech) {
+      // 综合滚动频道：没命中就不进任何板块（这些新闻其他频道已收录）
+      if (news.poolOnly) news.category = "";
+      continue;
+    }
+
+    // 命中科技词，但标题里有"政治化/双开/宣讲…"这类排除词 → 不算科技
+    const hitExclude = TECH_EXCLUDE_WORDS.filter(w => (news.title || "").includes(w));
+    if (hitExclude.length > 0) {
+      excluded.push(`${news.title}（命中排除词：${hitExclude.join("、")}）`);
+      // 排除后仍要走 poolOnly 判断：滚动频道的条目本来就没别的板块可去
+      if (news.poolOnly) news.category = "";
+      continue;                                     // 非滚动的保留原板块（政治/财经）
+    }
+
+    news.category = "科技";
+    techCount++;
+  }
+  console.log(`[科技池] 候选 ${poolCount} 条 → 命中科技关键词 ${techCount} 条`
+    + (excluded.length ? `，被排除词打回 ${excluded.length} 条` : ""));
+  if (excluded.length) {
+    console.log("[科技池] 命中但被排除词打回原板块的条目：");
+    excluded.forEach((t, i) => console.log(`   ${i + 1}. ${t}`));
+  }
+
+  // 过滤掉没有板块的（只有 poolOnly 且未命中的会走到这里）
+  const result = list.filter(news => news.category);
+  console.log(`[分板块] ${result.length} 条进入板块：`
+    + ["政治", "科技", "财经", "生活"]
+        .map(c => `${c} ${result.filter(n => n.category === c).length}`).join(" ｜ "));
+  return result;
+}
+
+/**
  * 组装「沉浸浏览」要看的新闻列表
  *
- * 做法：按 政治 → 科技 → 财经 → 生活 的顺序，每个专题各取最多
- * IMMERSIVE_MAX_PER_CATEGORY 条，再依次拼起来。
+ * 做法：按 政治 → 科技 → 财经 → 生活 的顺序，每个专题各取
+ * CATEGORY_QUOTA 里配的条数（与列表页共用同一张配额表），再依次拼起来。
  * 这样四个专题都能刷到，不会出现"只剩一两个专题"的情况。
  *
  * @param {Array} sortedNews 已经按时间从新到旧排好序的新闻数组
@@ -191,10 +524,8 @@ function buildImmersiveList(sortedNews) {
   const list = [];
 
   for (const category of CATEGORY_ORDER) {
-    const items = sortedNews
-      .filter(news => news.category === category)
-      .slice(0, IMMERSIVE_MAX_PER_CATEGORY);
-    list.push(...items);
+    // 与列表页共用 pickCategoryNews：板块配额 + 每个源最多几条
+    list.push(...pickCategoryNews(sortedNews, category));
   }
 
   // 打印每个专题各进了几条，方便核对（浏览器 F12 → Console 可见）
@@ -233,23 +564,20 @@ function renderImmersiveCard() {
   $("immProgress").style.width =
     ((immIndex + 1) / latestNews.length * 100).toFixed(2) + "%";
 
-  // 分类徽章的颜色：科技蓝、财经橙、生活粉
-  const badgeColors = { 科技: "#3b82f6", 财经: "#f59e0b", 生活: "#ec4899" };
-  const badgeColor = badgeColors[news.category] || "#4f46e5";
-
   // 图片地址同样要先过滤，只放行 http/https（见 safeUrl 的说明）
   const cover = safeUrl(news.image);
   const link = safeUrl(news.link);
 
   card.innerHTML = `
-    <!-- 上半屏：封面大图；加载失败或无图时显示 🖼️ 占位 -->
-    <div class="imm-media">
-      <div class="imm-fallback">🖼️</div>
+    <!-- 上半屏：封面图。没图时这里显示 data-category 对应的分类渐变底（见 style.css）；
+         有图时先铺渐变底，图片 onload 后加 .loaded 做 0.3s 淡入，不会闪白块 -->
+    <div class="imm-media" data-news-id="${escapeHtml(news.id)}"
+         data-category="${escapeHtml(news.category)}">
       ${cover
-        ? `<img src="${escapeHtml(cover)}" alt="新闻封面"
-             onerror="this.remove()">`   // 图片打不开就把自己删掉，露出占位图标
+        ? `<img class="imm-cover" src="${escapeHtml(cover)}" alt="新闻封面"
+             onload="this.classList.add('loaded')"
+             onerror="this.remove()">`   // 图片打不开就撤掉，只留渐变底
         : ""}
-      <span class="imm-badge" style="background:${badgeColor}">${escapeHtml(news.category)}</span>
     </div>
 
     <!-- 下半屏：标题（大字号）+ 自动摘要（大字号）+ 来源时间 + 两个按钮 -->
@@ -279,6 +607,10 @@ function renderImmersiveCard() {
     </div>
   `;
 
+  // 同步取一次"源站正文配图"（/api/image）。
+  // 卡片已经铺好分类渐变底，取到图就淡入，取不到就一直是渐变底，不闪白块。
+  requestArticleCover(news);
+
   // 趁当前这条在看的时候，把前后几条的图片先下载好（见 preloadNeighborImages）
   preloadNeighborImages();
 }
@@ -304,8 +636,16 @@ function toggleExcerpt() {
     const source = news.content || news.rawSummary || "";
     const points = extractKeyPoints(source, 4);
 
+    // 如实说明来源：中新网 RSS 只有 description（摘要），没有 content:encoded 正文。
+    // 代理通道已经用摘要全文兜底（见 rss.js 的 fetchViaProxy），
+    // 但那毕竟不是全文，这里必须写明，别让读者以为是完整正文。
+    const fromSummary = news.contentFromSummary === true;
+    const titleNote = fromSummary
+      ? "正文要点（该源只提供摘要，以下摘自 RSS 摘要全文）"
+      : "正文要点（自动摘抄）";
+
     panel.innerHTML = points.length
-      ? `<div class="imm-excerpt-title">📌 ${escapeHtml(news.category)} · 正文要点（自动摘抄）</div>
+      ? `<div class="imm-excerpt-title">📌 ${escapeHtml(news.category)} · ${titleNote}</div>
          <ul>${points.map(p => `<li>${escapeHtml(p)}</li>`).join("")}</ul>`
       : `<div class="imm-excerpt-title">📌 ${escapeHtml(news.category)} · 正文要点</div>
          <p class="imm-excerpt-empty">这个新闻源没有提供正文内容，
@@ -693,12 +1033,17 @@ $("btnGenerate").addEventListener("click", async () => {
     const results = await Promise.allSettled(
       sources.map(async source => {
         const items = await fetchRss(source.url);          // rss.js 里的抓取函数
-        // 关键词筛选：综合频道（如中新网滚动）里只保留命中的那一类新闻
-        const picked = filterByKeywords(items, source.keywords);
         const media = AUTHORITATIVE_MEDIA[source.publisher] || {};
-        return picked.slice(0, source.maxItems).map(item => ({
+        // 注意：这里**不做**关键词筛选了。
+        // 科技板块改成"多频道池"：先把要闻/国内/财经/滚动的条目合并，
+        // 再统一筛科技（见 dedupeAndAssignCategories）。
+        // 单源先筛会把财经频道里的科技新闻提前扔掉。
+        return items.slice(0, source.maxItems).map(item => ({
           ...item,
-          category: source.category,                       // 标记分类
+          id: makeNewsId(item),                            // 稳定 id（配图定位/缓存用）
+          category: source.category,                       // 标记分类（科技池命中后会被改写）
+          inTechPool: TECH_POOL_SOURCES.includes(source.name), // 是否属于科技候选池
+          poolOnly: source.poolOnly === true,                  // 综合频道：没命中就不进板块
           source: source.name,                             // 频道名，如"中新网要闻"
           publisher: source.publisher,                     // 媒体机构，如"中国新闻社"
           publisherType: media.type || "",                 // 机构性质，如"国家通讯社"
@@ -723,17 +1068,45 @@ $("btnGenerate").addEventListener("click", async () => {
       }
     });
 
+    // 打印每个源各抓到几条（哪个源没数据一眼看出来）
+    console.log("[分源] " + sources.map((s, i) =>
+      `${s.name} ${results[i].status === "fulfilled" ? results[i].value.length + "条" : "失败"}`
+    ).join(" ｜ "));
+
+    // 源停更告警：抓到了条目、但最新一条距今超过 SOURCE_STALE_DAYS 天就提示。
+    // 阈值 4 天是为了不误报低频源（中新网生活实测当天 10 条、最新 18:40）；
+    // 真正的死源会停更数月，4 天足够把它们筛出来。
+    const nowTs = Date.now();
+    sources.forEach((s, i) => {
+      if (results[i].status !== "fulfilled") return;
+      const items = results[i].value || [];
+      if (!items.length) return;
+      const newest = items.reduce((max, it) => {
+        const t = new Date(it.pubDate).getTime();
+        return isNaN(t) ? max : Math.max(max, t);
+      }, 0);
+      if (!newest) return;
+      const days = (nowTs - newest) / 86400000;
+      if (days > SOURCE_STALE_DAYS) {
+        console.warn(`[源告警] ${s.name} 最新条目距今 ${days.toFixed(1)} 天`
+          + `（阈值 ${SOURCE_STALE_DAYS} 天），可能是停更源，建议核对`);
+      }
+    });
+
     // ---- 第 2 步：时间过滤，只保留"今天 00:00 之后"发布的新闻 ----
     const countBefore = allNews.length;
     const todayStart = new Date();
     todayStart.setHours(0, 0, 0, 0);   // 把时间拨到今天零点整
-    const todayNews = allNews.filter(news => {
+    const todayRaw = allNews.filter(news => {
       const d = new Date(news.pubDate);
       // 没有日期或日期无效的新闻无法证明是今天的，一律排除
       return !isNaN(d.getTime()) && d >= todayStart;
     });
     // 打印过滤前后数量（浏览器按 F12 → Console 可看到这行）
-    console.log(`[时间过滤] 过滤前共 ${countBefore} 条，今天 00:00 后保留 ${todayNews.length} 条`);
+    console.log(`[时间过滤] 过滤前共 ${countBefore} 条，今天 00:00 后保留 ${todayRaw.length} 条`);
+
+    // ---- 第 2.5 步：去重 + 板块互斥 + 科技池归类 ----
+    const todayNews = dedupeAndAssignCategories(todayRaw);
 
     // ---- 第 3 步：按时间从新到旧排序，再挑出列表页要显示的新闻 ----
     todayNews.sort((a, b) => new Date(b.pubDate) - new Date(a.pubDate));
@@ -762,6 +1135,9 @@ $("btnGenerate").addEventListener("click", async () => {
     renderCategory("科技", techList);
     renderCategory("财经", finList);
     renderCategory("生活", lifeList);
+
+    // 记下列表页当前这批新闻，供图片加载失败时按 id 反查
+    shownNews = topNews;
 
     // ---- 阶段1：把这批新闻交给沉浸浏览，并显示临时预览按钮 ----
     // 注意：沉浸浏览用的是"每个专题各取几条"的列表（buildImmersiveList），

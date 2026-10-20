@@ -19,10 +19,12 @@
  *     页面沿用现有的"以下源暂时无法访问"提示，不会白屏。
  */
 
-// 本地代理接口路径与超时。超时故意设得很短（3 秒）：
-// 服务器没启动时立刻让位给 rss2json，不让页面干等。
+// 本地代理接口路径与超时。
+// 超时 10 秒：必须大于服务端的抓取超时（start-server.ps1 里是 8 秒）。
+// 否则源站慢到 5 秒时，前端 3 秒就放弃、降级到只给 10 条的 rss2json，
+// 而代理本来是能成功的——那就白降级了。
 const FEED_PROXY_PATH = "/api/feed";
-const FEED_PROXY_TIMEOUT_MS = 3000;
+const FEED_PROXY_TIMEOUT_MS = 10000;   // 必须 > 服务端抓取超时（8 秒）
 const RSS2JSON_TIMEOUT_MS = 15000;
 
 /**
@@ -91,15 +93,18 @@ async function fetchViaProxy(feedUrl) {
   }
 
   const items = Array.isArray(data.items) ? data.items : [];
-  // 代理只给 title/link/pubDate/description，没有正文和缩略图字段，
-  // 所以 content 留空、image 仍从 description 里的 <img> 找（extractImage 已支持）
+  // 代理只给 title/link/pubDate/description 四个字段（中新网 RSS 实测
+  // 没有 content:encoded，也没有任何图片字段）。
+  // 正文 content 不留空：用 description 全文兜底，并打 contentFromSummary 标记，
+  // 「摘抄正文」里会据此如实说明"该源只提供摘要"，不让读者以为是全文。
   return items.map(item => ({
     title: stripHtml(item.title || ""),
     link: item.link || "",
     summary: stripHtml(item.description || ""),
     pubDate: item.pubDate || "",
     image: extractImage(item),
-    content: "",
+    content: stripHtml(item.description || "").slice(0, 3000),
+    contentFromSummary: true,
   }));
 }
 
@@ -212,43 +217,20 @@ function extractImage(item) {
 }
 
 /**
- * 去掉文本中的 HTML 标签（如 <p>、<img>），只留纯文字
- * 原理：利用浏览器自带的 DOM 解析，比正则更可靠
+ * 判断一条文本是否命中某个关键词
+ *
+ * 中文关键词：直接看有没有这段字（"科技"命中"科技成果"）。
+ * 纯字母/数字的关键词（AI、5G、6G 这类）：按"整词"匹配，
+ *   前后必须不是字母或数字，否则 "CAI" "AIA" "ShanghaiAI" 都会被 "AI" 命中。
+ *   实测反例：CAI / AIA / ShanghaiAI 都不再算命中，而"AI时代""AI重塑"仍算命中。
  */
-function stripHtml(html) {
-  const div = document.createElement("div");
-  div.innerHTML = html;
-  return (div.textContent || "").trim();
-}
-
-/**
- * 提取新闻配图地址（记者/编辑选用的文章封面图）
- * 按优先级依次尝试 3 个地方，找到哪个用哪个，都没有则返回 ""
- *   1. item.thumbnail      —— rss2json 整理好的缩略图字段
- *   2. item.enclosure      —— RSS 标准的附件字段（很多新闻站的封面图放这里）
- *   3. 正文 description 里 —— 有的站把图直接嵌在正文第一段 HTML 里
- */
-function extractImage(item) {
-  // 1. 缩略图字段
-  if (item.thumbnail && item.thumbnail.startsWith("http")) {
-    return item.thumbnail;
-  }
-
-  // 2. 附件字段（必须是图片类型的附件才用）
-  if (item.enclosure && item.enclosure.link
-      && (item.enclosure.type || "").startsWith("image")) {
-    return item.enclosure.link;
-  }
-
-  // 3. 从正文 HTML 里找出第一张 <img> 的地址
-  const div = document.createElement("div");
-  div.innerHTML = item.description || "";
-  const img = div.querySelector("img");
-  if (img && img.src && img.src.startsWith("http")) {
-    return img.src;
-  }
-
-  return "";
+function matchKeyword(text, word) {
+  if (!word) return false;
+  const isAscii = /^[A-Za-z0-9+\-.#]+$/.test(word);
+  if (!isAscii) return text.includes(word);
+  const re = new RegExp("(^|[^A-Za-z0-9])" + word.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")
+                        + "([^A-Za-z0-9]|$)", "i");
+  return re.test(text);
 }
 
 /**
@@ -256,17 +238,25 @@ function extractImage(item) {
  * 用途：某些官方媒体没有细分频道（比如中新网没有专门的科技频道），
  * 只能先抓综合频道，再用关键词把某一类新闻挑出来。
  *
+ * 【只匹配标题，不匹配摘要】
+ * 以前标题 + 摘要一起匹配，实测 9 条命中里约 4 条是误命中
+ * （"快递业务量""消费新空间""医疗队""网络名人行"这类，
+ *   关键词其实出现在摘要的枝节里，新闻本身不是科技稿）。
+ * 改成只看标题后 9 条 → 5 条，条数少了但条条相关。
+ * 代价：个别"标题没写关键词、摘要里才出现"的真科技稿会被漏掉，
+ * 权衡下来宁可少而准。
+ *
  * @param {Array}  items    新闻数组
  * @param {Array}  keywords 关键词数组；为空数组/不传则原样返回（不做筛选）
- * @returns {Array} 标题或摘要中命中任意一个关键词的新闻
+ * @returns {Array} 标题中命中任意一个关键词的新闻
  */
 function filterByKeywords(items, keywords) {
   if (!Array.isArray(keywords) || keywords.length === 0) {
     return items;
   }
   return items.filter(item => {
-    const text = (item.title || "") + " " + (item.summary || "");
-    return keywords.some(word => text.includes(word));
+    const text = item.title || "";          // 只匹配标题
+    return keywords.some(word => matchKeyword(text, word));
   });
 }
 
