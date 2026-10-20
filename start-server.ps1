@@ -552,7 +552,7 @@ while ($listener.IsListening) {
     # 失败时返回 {"ok":false,...}，前端不放占位图标，只留干净空位。
     if ($path -eq "/api/ai-image") {
       if ($ctx.Request.HttpMethod -ne "POST") {
-        Send-Json $ctx @{ ok = $false; error = "METHOD_NOT_ALLOWED"; message = "请用 POST" }
+        Send-Json $ctx @{ ok = $false; error = "METHOD_NOT_ALLOWED"; message = "请用 POST" } -statusCode 405
         $ctx.Response.Close()
         continue
       }
@@ -575,7 +575,8 @@ while ($listener.IsListening) {
       }
 
       if (-not $pythonExe) {
-        Send-Json $ctx @{ ok = $false; error = "PYTHON_NOT_FOUND"; message = "本机没有可用的 python，AI 补图不可用" }
+        # 503：服务端缺少依赖（python），属于"暂时不可用"，不是请求本身有问题
+        Send-Json $ctx @{ ok = $false; error = "PYTHON_NOT_FOUND"; message = "本机没有可用的 python，AI 补图不可用" } -statusCode 503
         $ctx.Response.Close()
         continue
       }
