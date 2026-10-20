@@ -211,6 +211,24 @@ body {
   background: #f1f5f9;
 }
 
+/* 列表缩略图包装器：固定 86×86，overflow:hidden 用于裁掉 AI 图底部水印带 */
+.news-thumb-wrap {
+  flex: 0 0 86px;
+  width: 86px;
+  height: 86px;
+  border-radius: 10px;
+  overflow: hidden;
+  background: #f1f5f9;
+}
+
+.news-thumb-wrap img,
+.news-thumb-wrap img.ai-cleaned {
+  width: 100%;
+  height: 108%;               /* 稍微拉高，让底部 8% 被裁掉 */
+  object-fit: cover;
+  object-position: top;
+  display: block;
+}
 
 /* 右侧文字区域 */
 .news-body { flex: 1; min-width: 0; }
@@ -547,6 +565,11 @@ footer {
   opacity: 1;
 }
 
+/* AI 生成的图：把高度拉到 108%，让容器裁掉底部 8%，隐藏 AI 服务常见的水印带 */
+.imm-media img.ai-cleaned {
+  height: 108%;
+  object-position: top;
+}
 
 /* 摘要 / 摘抄这两个可滚动文字区
    注意：外层 .immersive 设了 touch-action: none（防止橡皮筋），

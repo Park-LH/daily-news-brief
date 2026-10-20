@@ -9,6 +9,7 @@
 # 本服务器提供四类服务：
 #   1. 静态文件：把 html/css/js 文件发给浏览器
 #   2. 数据接口：/api/stats —— 保存和读取历史统计数据（存 .data/stats.json）
+#   3. 配图接口：/api/ai-image —— 给缺图的新闻生成 AI 配图（调 tools/gen_news_image.py）
 #   4. RSS 代理：/api/feed —— 服务端代抓 RSS（解决 rss2json 只返回 10 条的限制）
 
 $root = Split-Path -Parent $MyInvocation.MyCommand.Path
@@ -47,6 +48,30 @@ $ARTICLE_URL_PATTERN = '^https?://(?:www\.)?chinanews\.com\.cn(?:/[a-z0-9-]{2,10
 # 24 小时内存缓存：沉浸浏览来回翻页会重复请求同一篇，没必要每次都抓
 $IMAGE_CACHE_HOURS = 24
 $ImageCache = @{}
+
+# ---------- 找 python（AI 补图要用）----------
+# 生成图片要靠 python 调 CodeBuddy 的图片生成脚本，所以先在本机找一个能用的解释器。
+# 找不到也不影响服务器启动，只是 AI 补图不可用（页面会保持干净空位）。
+function Resolve-Python {
+  $candidates = @($env:BUDDY_PYTHON)
+  # CodeBuddy 自带的 python（优先，最稳）
+  $wb = Join-Path $env:USERPROFILE ".workbuddy\binaries\python"
+  if (Test-Path $wb) {
+    Get-ChildItem $wb -Recurse -Depth 3 -Filter "python.exe" -ErrorAction SilentlyContinue |
+      ForEach-Object { $candidates += $_.FullName }
+  }
+  $candidates += @("python", "python3", "py")
+
+  foreach ($c in $candidates) {
+    if (-not $c) { continue }
+    try {
+      $ver = & $c --version 2>&1 | Out-String
+      if ($ver -match "Python\s*\d") { return $c }   # 确认真的能跑，而不是应用商店占位
+    } catch { }
+  }
+  return $null
+}
+$pythonExe = Resolve-Python
 
 # ---------- 启动前 1：探测本机局域网 IP（给手机访问用）----------
 # 优先取 192.168.* 这类家庭/办公网段地址，取不到再退到其他内网地址
@@ -145,6 +170,15 @@ if ($lanMode) {
   Write-Host "  本机访问: http://localhost:$port/" -ForegroundColor Cyan
 }
 Write-Host "  停止方法：直接关闭本窗口"
+if ($pythonExe) {
+  if ($env:BUDDY_CLOUD_TOKEN) {
+    Write-Host "  AI 补图：可用（已检测到 python 与生成服务密钥）" -ForegroundColor Green
+  } else {
+    Write-Host "  AI 补图：未启用（缺生成服务密钥 BUDDY_CLOUD_TOKEN，缺图条目保持干净空位）" -ForegroundColor Yellow
+  }
+} else {
+  Write-Host "  AI 补图：未启用（本机没有可用 python，缺图条目保持干净空位）" -ForegroundColor Yellow
+}
 Write-Host "========================================="
 
 Start-Process "http://localhost:$port/"
@@ -510,7 +544,79 @@ while ($listener.IsListening) {
       continue
     }
 
-    # ===== 接口 4：静态文件 =====
+    # ===== 接口 4：/api/ai-image 给缺图的新闻生成配图 =====
+    # 前端（js/aiImage.js）在没有可用配图时 POST 过来：
+    #   {"id":"n1a2b3c","category":"科技","keywords":["芯片"],"prompt":"……"}
+    # 本接口调用 tools/gen_news_image.py 出图并落盘，
+    # 返回 {"ok":true,"url":"assets/images/gen/n1a2b3c.png"}
+    # 失败时返回 {"ok":false,...}，前端不放占位图标，只留干净空位。
+    if ($path -eq "/api/ai-image") {
+      if ($ctx.Request.HttpMethod -ne "POST") {
+        Send-Json $ctx @{ ok = $false; error = "METHOD_NOT_ALLOWED"; message = "请用 POST" }
+        $ctx.Response.Close()
+        continue
+      }
+
+      $reader = New-Object IO.StreamReader($ctx.Request.InputStream)
+      $req = ($reader.ReadToEnd()) | ConvertFrom-Json
+
+      # 文件名只保留安全字符，防止路径穿越
+      $rawId = if ($req.id) { ($req.id | Out-String).Trim() } else { "" }
+      $id = [regex]::Replace($rawId, '[^A-Za-z0-9_\-]', '')
+      if ([string]::IsNullOrEmpty($id)) { $id = [Guid]::NewGuid().ToString("N").Substring(0, 10) }
+
+      # 生成过就直接复用
+      $outRel = "assets/images/gen/$id.png"
+      $outAbs = Join-Path $root ($outRel -replace "/", "\")
+      if (Test-Path $outAbs) {
+        Send-Json $ctx @{ ok = $true; url = $outRel; from = "cached" }
+        $ctx.Response.Close()
+        continue
+      }
+
+      if (-not $pythonExe) {
+        Send-Json $ctx @{ ok = $false; error = "PYTHON_NOT_FOUND"; message = "本机没有可用的 python，AI 补图不可用" }
+        $ctx.Response.Close()
+        continue
+      }
+
+      # 描述词写进临时文件再传给脚本：内容长、含引号时更安全
+      New-Item -ItemType Directory -Path (Join-Path $root ".data") -Force | Out-Null
+      $promptFile = Join-Path $root ".data\ai-prompt-$id.txt"
+      [IO.File]::WriteAllText($promptFile, ($req.prompt | Out-String), [Text.Encoding]::UTF8)
+
+      $genScript = Join-Path $root "tools\gen_news_image.py"
+      $pyArgs = @(
+        $genScript,
+        "--id", $id,
+        "--category", ($req.category | Out-String).Trim(),
+        "--keywords", (($req.keywords | ForEach-Object { $_ }) -join ","),
+        "--prompt-file", $promptFile,
+        "--python", $pythonExe
+      )
+      if ($env:BUDDY_CLOUD_TOKEN) { $pyArgs += @("--token", $env:BUDDY_CLOUD_TOKEN) }
+
+      $result = $null
+      try {
+        # 生成一张图通常要十几秒到一分钟，这里同步等它完成
+        $raw = (& $pythonExe @pyArgs 2>$null | Out-String).Trim()
+        if ($raw) { $result = $raw | ConvertFrom-Json }
+      } catch {
+        $result = $null
+      }
+      Remove-Item $promptFile -Force -ErrorAction SilentlyContinue
+
+      if ($null -ne $result -and $result.ok) {
+        Send-Json $ctx @{ ok = $true; url = $result.url; from = $result.from }
+      } else {
+        $msg = if ($result -and $result.message) { $result.message } else { "AI 补图未成功" }
+        Send-Json $ctx @{ ok = $false; error = if ($result) { $result.error } else { "SCRIPT_FAILED" }; message = $msg }
+      }
+      $ctx.Response.Close()
+      continue
+    }
+
+    # ===== 接口 5：静态文件 =====
     if ($path -eq "/") { $path = "/index.html" }
 
     # 拼出本地文件路径，并检查它确实在项目文件夹里（安全防护）

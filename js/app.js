@@ -117,7 +117,8 @@ function renderCategory(category, newsList) {
         // 有图：直接显示，不放任何角标/边框/水印等装饰
         ? `<img class="news-thumb" data-news-id="${escapeHtml(news.id)}"
              src="${escapeHtml(img)}" alt="新闻配图" loading="lazy">`
-        // 无图：留一块干净的空位（不再是 🖼️ 占位图标）
+        // 无图：留一块干净的空位（不再是 🖼️ 占位图标），
+        //      随后由 aiImage.js 用素材库或 AI 生成补上
         : `<div class="news-thumb news-thumb-empty"
              data-news-id="${escapeHtml(news.id)}"></div>`}
       <div class="news-body">
@@ -141,6 +142,11 @@ function renderCategory(category, newsList) {
       if (el.dataset.newsId) box.dataset.newsId = el.dataset.newsId;
       el.replaceWith(box);
 
+      const news = shownNews.find(n => n.id === el.dataset.newsId);
+      if (news) {
+        news.image = "";          // 标记这条其实没图，交给补图流程
+        ensureNewsImage(news);
+      }
     });
   });
 }
@@ -610,6 +616,10 @@ function renderImmersiveCard() {
   // 同步取一次"源站正文配图"（/api/image）。
   // 卡片已经铺好分类渐变底，取到图就淡入，取不到就一直是渐变底，不闪白块。
   requestArticleCover(news);
+
+  // 这条还没有任何封面图 → 交给 aiImage.js（素材库 → AI 生成）补一张，
+  // 补到之后会自动填进上面这张卡片（不放任何占位图标）
+  if (!cover) ensureNewsImage(news);
 
   // 趁当前这条在看的时候，把前后几条的图片先下载好（见 preloadNeighborImages）
   preloadNeighborImages();
@@ -1136,8 +1146,10 @@ $("btnGenerate").addEventListener("click", async () => {
     renderCategory("财经", finList);
     renderCategory("生活", lifeList);
 
+    // ---- 配图补图：缺图的新闻走"素材库 → AI 生成"，页面不放占位图标 ----
     // 记下列表页当前这批新闻，供图片加载失败时按 id 反查
     shownNews = topNews;
+    fillMissingImages(topNews);
 
     // ---- 阶段1：把这批新闻交给沉浸浏览，并显示临时预览按钮 ----
     // 注意：沉浸浏览用的是"每个专题各取几条"的列表（buildImmersiveList），

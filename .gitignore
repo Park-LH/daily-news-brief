@@ -1,6 +1,9 @@
 # 个人统计数据（由后端接口生成，不进仓库）
 .data/
 
+# AI 运行时生成的配图（随时可重新生成，不进仓库）
+assets/images/gen/
+
 # 系统文件
 Thumbs.db
 .DS_Store
