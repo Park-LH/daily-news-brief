@@ -6,7 +6,8 @@
  * 【本文件三个核心配置】
  *   1. AUTHORITATIVE_MEDIA —— 权威媒体白名单：只有名单里的媒体机构才允许接入
  *   2. RSS_SOURCES         —— 新闻源列表：每一项都要挂到白名单里的某家媒体下
- *   3. CATEGORY_QUOTA —— 各板块各取几条（列表页与沉浸浏览共用这一张表）
+ *   3. CATEGORY_QUOTA —— 各板块各取几条（列表页与沉浸浏览共用这一张表；
+ *      旧名 MAX_NEWS_PER_CATEGORY / IMMERSIVE_MAX_PER_CATEGORY 已废弃，勿再用）
  *
  * 【RSS_SOURCES 每项字段】
  *   - name:      频道显示名，如"中新网要闻"
