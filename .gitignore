@@ -4,6 +4,9 @@
 # AI 运行时生成的配图（随时可重新生成，不进仓库）
 assets/images/gen/
 
+# Python 运行缓存（tools/ 下的脚本编译产物）
+__pycache__/
+
 # 系统文件
 Thumbs.db
 .DS_Store
