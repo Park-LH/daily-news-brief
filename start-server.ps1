@@ -98,8 +98,12 @@ $pythonExe = Resolve-Python
 function Get-LanIP {
   $all = Get-NetIPAddress -AddressFamily IPv4 -ErrorAction SilentlyContinue |
          Where-Object { $_.IPAddress -notlike '127.*' -and $_.IPAddress -notlike '169.254.*' }
-  $home = $all | Where-Object { $_.IPAddress -like '192.168.*' }
-  if ($home) { return ($home | Sort-Object InterfaceMetric | Select-Object -First 1).IPAddress }
+  # ⚠️ 变量名不能叫 $home —— 那是 PowerShell 的**只读**自动变量（指向用户主目录），
+  # 赋值会直接抛 VariableNotWritable 错误；更隐蔽的是赋值没生效后 $home 仍是路径
+  # 字符串，导致 if ($home) 恒为真、下面的其它网段兜底永远走不到，
+  # 手机地址就会一直显示"未探测到局域网IP"（server-err.txt 里留过这个错的原文）。
+  $homeNet = $all | Where-Object { $_.IPAddress -like '192.168.*' }
+  if ($homeNet) { return ($homeNet | Sort-Object InterfaceMetric | Select-Object -First 1).IPAddress }
   $other = $all | Where-Object { $_.IPAddress -like '10.*' -or $_.IPAddress -like '172.1?.*' -or $_.IPAddress -like '172.2?.*' -or $_.IPAddress -like '172.3?.*' }
   if ($other) { return ($other | Sort-Object InterfaceMetric | Select-Object -First 1).IPAddress }
   return $null
@@ -179,7 +183,15 @@ Write-Host "========================================="
 if ($lanMode) {
   Write-Host "  手机/局域网模式：同一 WiFi 下的手机也能打开" -ForegroundColor Green
   Write-Host "  本机访问: http://localhost:$port/" -ForegroundColor Cyan
-  Write-Host ("  手机访问: http://" + ($(if ($lanIP) { $lanIP } else { "未探测到局域网IP" })) + ":$port/") -ForegroundColor Cyan
+  if ($lanIP) {
+    Write-Host ("  手机访问: http://" + $lanIP + ":$port/") -ForegroundColor Cyan
+  } else {
+    # 探测失败也要给出可执行的办法：服务照样监听 http://+:8019/，
+    # 只是我们没猜出该显示哪个 IP，用户可以自己从 ipconfig 里抄。
+    Write-Host "  手机访问：自动探测本机局域网 IP 失败（多网卡/虚拟网卡时可能发生）" -ForegroundColor Yellow
+    Write-Host "  手动办法：另开一个 PowerShell 窗口跑 ipconfig，" -ForegroundColor Yellow
+    Write-Host ("  找『无线局域网适配器 WLAN』下的 IPv4 地址，手机输入 http://<该地址>:" + $port + "/") -ForegroundColor Yellow
+  }
   Write-Host ""
   Write-Host "  手机打不开时按顺序排查：" -ForegroundColor Yellow
   Write-Host "   1. 手机和电脑连的是同一个 WiFi"
@@ -649,6 +661,82 @@ while ($listener.IsListening) {
       } else {
         $msg = if ($result -and $result.message) { $result.message } else { "AI 补图未成功" }
         Send-Json $ctx @{ ok = $false; error = if ($result) { $result.error } else { "SCRIPT_FAILED" }; message = $msg }
+      }
+      $ctx.Response.Close()
+      continue
+    }
+
+    # ===== 接口 4.5：/api/code-image 用「代码」给新闻画一张配图 =====
+    # 前端（js/aiImage.js）POST 过来：
+    #   {"id":"n1a2b3c","category":"科技","keywords":["芯片"],"title":"……"}
+    # 与 /api/ai-image 的区别：本接口**不调 AI、不需要密钥、毫秒级返回**，
+    # 画面由这条新闻的分类 + 关键词 + 标题指纹决定（见 tools/news_image_factory.py）。
+    # 作用：保证**每条新闻都有配图**——AI 那条通道缺密钥/超时/排队时也不会留空位。
+    if ($path -eq "/api/code-image") {
+      if ($ctx.Request.HttpMethod -ne "POST") {
+        Send-Json $ctx @{ ok = $false; error = "METHOD_NOT_ALLOWED"; message = "请用 POST" } -statusCode 405
+        $ctx.Response.Close()
+        continue
+      }
+
+      $readerC = New-Object IO.StreamReader($ctx.Request.InputStream)
+      $reqC = ($readerC.ReadToEnd()) | ConvertFrom-Json
+
+      # 文件名只保留安全字符，防止路径穿越
+      $rawIdC = if ($reqC.id) { ($reqC.id | Out-String).Trim() } else { "" }
+      $idC = [regex]::Replace($rawIdC, '[^A-Za-z0-9_\-]', '')
+      if ([string]::IsNullOrEmpty($idC)) { $idC = [Guid]::NewGuid().ToString("N").Substring(0, 10) }
+
+      # 画过就直接复用（同一条新闻画出来的图永远一致）
+      $codeRel = "assets/images/news-library/$idC.svg"
+      $codeAbs = Join-Path $root ($codeRel -replace "/", "\")
+      if (Test-Path $codeAbs) {
+        Send-Json $ctx @{ ok = $true; url = $codeRel; from = "cached" }
+        $ctx.Response.Close()
+        continue
+      }
+
+      if (-not $pythonExe) {
+        # 503：服务端缺少依赖（python），属于"暂时不可用"，不是请求本身有问题
+        Send-Json $ctx @{ ok = $false; error = "PYTHON_NOT_FOUND"; message = "本机没有可用的 python，代码配图不可用" } -statusCode 503
+        $ctx.Response.Close()
+        continue
+      }
+
+      $kwC = (($reqC.keywords | ForEach-Object { $_ }) -join ",")
+      $catC = (($reqC.category | Out-String).Trim())
+      $titleC = (($reqC.title | Out-String).Trim())
+      # ⚠️ 参数必须写成 "--keywords=值" 的形式：
+      # PowerShell 调原生命令时会**丢掉空字符串参数**，写成 "--keywords" ""
+      # 在 keywords 为空时会变成"缺值"，python 直接报 argparse 错误（实测复现）。
+      $codeArgs = @(
+        (Join-Path $root "tools\news_image_factory.py"),
+        "--id=$idC",
+        "--category=$catC",
+        "--keywords=$kwC",
+        "--title=$titleC"
+      )
+
+      $resultC = $null
+      try {
+        # 出错时把 python 的 stderr 留到日志里（否则只能看到笼统的 SCRIPT_FAILED，没法排查）
+        New-Item -ItemType Directory -Path (Join-Path $root ".data") -Force | Out-Null
+        $errFileC = Join-Path $root ".data\code-image-err.log"
+        $rawC = (& $pythonExe @codeArgs 2>$errFileC | Out-String).Trim()
+        if ($rawC) { $resultC = $rawC | ConvertFrom-Json }
+      } catch {
+        $resultC = $null
+      }
+
+      if ($null -ne $resultC -and $resultC.ok) {
+        Send-Json $ctx @{ ok = $true; url = $resultC.url; motif = $resultC.motif; from = $resultC.from }
+      } else {
+        $msgC = if ($resultC -and $resultC.message) { $resultC.message } else { "代码配图未成功" }
+        if ((Test-Path $errFileC) -and -not $resultC) {
+          $tailC = (Get-Content $errFileC -Tail 3 -ErrorAction SilentlyContinue | Out-String).Trim()
+          if ($tailC) { $msgC = "$msgC（详见 .data\code-image-err.log：$($tailC.Substring(0, [Math]::Min(200, $tailC.Length)))" }
+        }
+        Send-Json $ctx @{ ok = $false; error = if ($resultC) { $resultC.error } else { "SCRIPT_FAILED" }; message = $msgC }
       }
       $ctx.Response.Close()
       continue

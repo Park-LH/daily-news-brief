@@ -1146,10 +1146,10 @@ $("btnGenerate").addEventListener("click", async () => {
     renderCategory("财经", finList);
     renderCategory("生活", lifeList);
 
-    // ---- 配图补图：缺图的新闻走"素材库 → AI 生成"，页面不放占位图标 ----
-    // 记下列表页当前这批新闻，供图片加载失败时按 id 反查
+    // ---- 配图：所有新闻自动配图（图库 → 代码生成 → 可选的 AI 升级）----
+    // 页面不放占位图标：拿到图就显示，拿不到（file:// 直开无后端）才保持渐变底
     shownNews = topNews;
-    fillMissingImages(topNews);
+    fillAllImages(topNews);
 
     // ---- 阶段1：把这批新闻交给沉浸浏览，并显示临时预览按钮 ----
     // 注意：沉浸浏览用的是"每个专题各取几条"的列表（buildImmersiveList），
