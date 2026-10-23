@@ -48,6 +48,8 @@ $ARTICLE_URL_PATTERN = '^https?://(?:www\.)?chinanews\.com\.cn(?:/[a-z0-9-]{2,10
 # 24 小时内存缓存：沉浸浏览来回翻页会重复请求同一篇，没必要每次都抓
 $IMAGE_CACHE_HOURS = 24
 $ImageCache = @{}
+# 文章页正文缓存（/api/article 用）：与取图缓存分开存，互不干扰
+$ArticleCache = @{}
 
 # ---------- 找 python（AI 补图要用）----------
 # 生成图片要靠 python 调 CodeBuddy 的图片生成脚本，所以先在本机找一个能用的解释器。
@@ -589,6 +591,156 @@ while ($listener.IsListening) {
       # ---- 第 7 步：写缓存并返回（只给 URL，不给 base64）----
       $ImageCache[$articleUrl] = @{ time = (Get-Date); image = $image }
       Send-Json $ctx @{ ok = $true; url = $articleUrl; image = $image; cached = $false }
+      $ctx.Response.Close()
+      continue
+    }
+
+    # ===== 接口 3.5：/api/article 取文章页正文全文（GET /api/article?url=...）=====
+    # 为什么需要它：中新网 RSS 只给一句 description（导语），
+    # 「摘抄正文」如果只摘这一句，像"致信 / 讲话 / 报告"这类新闻的要点
+    # 全在文章页正文里，摘抄就会漏掉最关键的内容（2026-10-23 用户实测反馈）。
+    # 所以要点改从文章页正文里摘；正文取不到才退回 RSS 摘要。
+    #
+    # 正文区定位（2026-10-23 实测文章页结构）：
+    #   <div class="content_maincontent_content"> … </div>   ← 正文容器
+    #   "【编辑"                                             ← 正文到此为止（后面是署名/广告/推荐位）
+    #   实测：定位后正文 838 字，整页去标签则有 4135 字（含导航与广告）
+    #
+    # 返回：{ ok, url, text, length, cached }（text 为纯文字；没抓到正文时 text 为 ""）
+    if ($path -eq "/api/article") {
+      if ($ctx.Request.HttpMethod -ne "GET") {
+        Send-Json $ctx @{ ok = $false; error = "METHOD_NOT_ALLOWED"; message = "请用 GET" } -statusCode 405
+        $ctx.Response.Close()
+        continue
+      }
+
+      # ---- 第 0 步：取 url 参数 ----
+      $articleUrl = ""
+      if ($ctx.Request.QueryString["url"]) {
+        $articleUrl = ($ctx.Request.QueryString["url"] | Out-String).Trim()
+      }
+      if ([string]::IsNullOrEmpty($articleUrl)) {
+        Send-Json $ctx @{ ok = $false; error = "MISSING_URL"
+                          message = "缺少 url 参数，例：/api/article?url=<文章页地址>" } -statusCode 400
+        $ctx.Response.Close()
+        continue
+      }
+
+      # ---- 第 1 步：域名白名单（与 /api/image 同一套）----
+      $artHost = ""
+      try { $artHost = ([Uri]$articleUrl).Host } catch { $artHost = "" }
+      if ($ALLOWED_ARTICLE_HOSTS -notcontains $artHost) {
+        Send-Json $ctx @{
+          ok = $false; error = "DOMAIN_NOT_ALLOWED"
+          message = "只允许抓取白名单域名的文章页（当前允许：$($ALLOWED_ARTICLE_HOSTS -join '、')）"
+          host = $artHost
+        } -statusCode 403
+        $ctx.Response.Close()
+        continue
+      }
+
+      # ---- 第 2 步：必须是文章页 ----
+      $articlePath = $articleUrl -replace '[?#].*$', ''
+      if ($articlePath -notmatch $ARTICLE_URL_PATTERN) {
+        Send-Json $ctx @{
+          ok = $false; error = "NOT_ARTICLE"
+          message = "不是文章页（文章页路径形如 /gn/2026/10-20/10718054.shtml），已拒绝抓取"
+          url = $articleUrl
+        } -statusCode 400
+        $ctx.Response.Close()
+        continue
+      }
+
+      # ---- 第 3 步：24 小时缓存 ----
+      if ($ArticleCache.ContainsKey($articleUrl)) {
+        $entry = $ArticleCache[$articleUrl]
+        if (((Get-Date) - $entry.time).TotalHours -lt $IMAGE_CACHE_HOURS) {
+          Send-Json $ctx @{ ok = $true; url = $articleUrl; text = $entry.text
+                            length = $entry.text.Length; cached = $true }
+          $ctx.Response.Close()
+          continue
+        }
+        $ArticleCache.Remove($articleUrl)
+      }
+
+      # ---- 第 4 步：抓页面（3 秒超时，失败重试 1 次，与取图一致）----
+      [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+      $resp = $null
+      $fetchErr = ""
+      for ($attempt = 1; $attempt -le 2; $attempt++) {
+        try {
+          $resp = Invoke-WebRequest -Uri $articleUrl -UseBasicParsing -TimeoutSec 3 `
+                  -Headers @{ "User-Agent" = "Mozilla/5.0" }
+          break
+        } catch {
+          $fetchErr = ($_.Exception.Message | Out-String).Trim()
+          if ($attempt -eq 1) { Start-Sleep -Milliseconds 300 }
+        }
+      }
+
+      if (-not $resp) {
+        $isTimeout = $fetchErr -match "超时|timed out|Timeout"
+        Write-Host "  [取正文] 失败（已重试 1 次）$articleUrl —— $fetchErr" -ForegroundColor Yellow
+        Send-Json $ctx @{
+          ok = $false
+          error = $(if ($isTimeout) { "FETCH_TIMEOUT" } else { "FETCH_FAILED" })
+          message = $(if ($isTimeout) { "抓取超时（3 秒，已重试 1 次）" } else { "抓取失败（已重试 1 次）：$fetchErr" })
+          url = $articleUrl
+        } -statusCode $(if ($isTimeout) { 504 } else { 502 })
+        $ctx.Response.Close()
+        continue
+      }
+
+      # ---- 第 5 步：按页面声明的编码解码（中文不乱码）----
+      $ms3 = New-Object IO.MemoryStream
+      try { $resp.RawContentStream.Position = 0; $resp.RawContentStream.CopyTo($ms3) } catch { }
+      $bytes3 = $ms3.ToArray()
+      $head3 = [Text.Encoding]::ASCII.GetString($bytes3, 0, [Math]::Min(2000, $bytes3.Length))
+      $enc3 = [Text.Encoding]::UTF8
+      if ($head3 -match 'charset\s*=\s*["'']?gb') {
+        try { $enc3 = [Text.Encoding]::GetEncoding("GB2312") } catch { $enc3 = [Text.Encoding]::UTF8 }
+      }
+      $html3 = $enc3.GetString($bytes3)
+
+      # ---- 第 6 步：框出正文区（容器 → 【编辑），再去标签 ----
+      $seg = ""
+      $startIdx = $html3.IndexOf('class="content_maincontent_content"')
+      if ($startIdx -ge 0) {
+        $gtIdx = $html3.IndexOf('>', $startIdx)          # 跳过容器标签本身
+        if ($gtIdx -lt 0) { $gtIdx = $startIdx }
+        $endIdx = $html3.IndexOf('【编辑', $gtIdx)
+        $segLen = if ($endIdx -gt $gtIdx) { $endIdx - $gtIdx } else { 30000 }
+        if ($segLen -gt 30000) { $segLen = 30000 }
+        if ($gtIdx + 1 + $segLen -gt $html3.Length) { $segLen = $html3.Length - $gtIdx - 1 }
+        if ($segLen -gt 0) { $seg = $html3.Substring($gtIdx + 1, $segLen) }
+      }
+      if ([string]::IsNullOrEmpty($seg)) { $seg = $html3 }   # 找不到容器就整页兜底
+
+      $text = $seg
+      $text = [regex]::Replace($text, '(?is)<script.*?</script>', ' ')
+      $text = [regex]::Replace($text, '(?is)<style.*?</style>', ' ')
+      $text = [regex]::Replace($text, '(?is)<!--.*?-->', ' ')
+      $text = [regex]::Replace($text, '(?is)<[^>]+>', ' ')
+      # 常见 HTML 实体还原（拆成一行一个，避免行尾续行符把链式调用写坏）
+      $text = $text.Replace('&nbsp;', ' ')
+      $text = $text.Replace('&amp;', '&')
+      $text = $text.Replace('&lt;', '<')
+      $text = $text.Replace('&gt;', '>')
+      $text = $text.Replace('&quot;', '"')
+      $text = $text.Replace('&#39;', "'")
+      $text = $text.Replace('&ldquo;', '“')
+      $text = $text.Replace('&rdquo;', '”')
+      $text = [regex]::Replace($text, '\s+', ' ').Trim()
+      # 去掉开头的电头（"中新网/新华社北京10月23日电(记者 高凯)"），它不属于正文要点。
+      # 实测同一天的新闻既有中新网电头也有新华社电头，只认一家会漏洗（2026-10-23 实测）。
+      $text = [regex]::Replace($text, '^(?:中新网|新华社|人民日报|央视网|央视新闻|中国新闻网)[^。！？]{0,40}?日电[^）)]{0,20}[）)]?\s*', '')
+      if ($text.Length -gt 6000) { $text = $text.Substring(0, 6000) }
+
+      Write-Host "  [取正文] $($articleUrl.Split('/')[-1]) → $($text.Length) 字"
+
+      # ---- 第 7 步：写缓存并返回 ----
+      $ArticleCache[$articleUrl] = @{ time = (Get-Date); text = $text }
+      Send-Json $ctx @{ ok = $true; url = $articleUrl; text = $text; length = $text.Length; cached = $false }
       $ctx.Response.Close()
       continue
     }

@@ -172,6 +172,8 @@ const ARTICLE_URL_RE =
 const ARTICLE_HOSTS = ["www.chinanews.com.cn", "chinanews.com.cn"];
 const IMAGE_API_PATH = "/api/image";
 const IMAGE_API_TIMEOUT_MS = 4000;   // 服务端自己 3 秒就放弃，这里只是兜底
+const ARTICLE_API_PATH = "/api/article";        // 取文章页正文全文（给「摘抄正文」用）
+const ARTICLE_API_TIMEOUT_MS = 6000;  // 正文比图大一点，留 6 秒兜底
 
 /**
  * 判断一个链接是不是"文章页"
@@ -221,6 +223,50 @@ async function fetchArticleImage(news) {
   } catch (e) {
     console.log(`[取图] 失败，静默降级到渐变底：${e.message}`);
     return null;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+/**
+ * 向 /api/article 要这条新闻的**正文全文**
+ *
+ * 为什么需要它：RSS 只给一句导语（description），像"致信 / 讲话 / 报告"这类
+ * 新闻的重要要点全在文章页正文里——只摘导语就会漏掉最关键的内容
+ * （2026-10-23 用户实测反馈：致信类新闻的摘抄缺了信件要点）。
+ * 拿到正文后写回 news.content，并把 contentFromSummary 置为 false，
+ * 「摘抄正文」据此标注"摘自文章页正文"。取不到就保持原样（退回摘要，不谎报）。
+ *
+ * @returns {Promise<string>} 正文全文；拿不到就是空字符串
+ */
+async function fetchArticleBody(news) {
+  if (!news || news.bodyApiDone) {
+    return (news && news.contentFromSummary === false) ? (news.content || "") : "";
+  }
+  news.bodyApiDone = true;
+
+  if (!isArticleUrl(news.link)) return "";      // 非文章页直接不发请求
+  if (typeof location !== "undefined" && location.protocol === "file:") return "";
+
+  const started = Date.now();
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), ARTICLE_API_TIMEOUT_MS);
+  try {
+    const r = await fetch(`${ARTICLE_API_PATH}?url=${encodeURIComponent(news.link)}`,
+                          { signal: ctrl.signal });
+    if (!r.ok) return "";
+    const data = await r.json();
+    const text = (data && data.ok && data.text) ? String(data.text) : "";
+    console.log(`[取正文] ${(news.title || "").slice(0, 16)}… → ${text.length} 字`
+      + ` · ${Date.now() - started}ms` + (data && data.cached ? " · 命中缓存" : ""));
+    if (text) {
+      news.content = text;
+      news.contentFromSummary = false;   // 现在是文章页正文，不再是 RSS 摘要
+    }
+    return text;
+  } catch (e) {
+    console.log(`[取正文] 失败，摘抄时退回 RSS 摘要：${e.message}`);
+    return "";
   } finally {
     clearTimeout(timer);
   }
@@ -617,6 +663,11 @@ function renderImmersiveCard() {
   // 卡片已经铺好分类渐变底，取到图就淡入，取不到就一直是渐变底，不闪白块。
   requestArticleCover(news);
 
+  // 提前把这篇的**正文全文**取下来（/api/article）：
+  // 用户点「摘抄正文」时能立刻出要点。尤其"致信 / 讲话 / 报告"类新闻，
+  // 要点只在文章页正文里，只摘 RSS 那句导语会漏掉最关键的内容。
+  fetchArticleBody(news);
+
   // 这条还没有任何封面图 → 交给 aiImage.js（素材库 → AI 生成）补一张，
   // 补到之后会自动填进上面这张卡片（不放任何占位图标）
   if (!cover) ensureNewsImage(news);
@@ -628,7 +679,7 @@ function renderImmersiveCard() {
 /**
  * 展开 / 收起「正文摘抄」
  * 从这条新闻的正文全文里挑出几条要点显示出来；
- * 如果这个源没有提供正文，就退回用原始摘要，并提示可打开原文
+ * 正文取不到（或这个源本来就不提供）时退回原始摘要，并如实标注来源
  */
 function toggleExcerpt() {
   const news = latestNews[immIndex];
@@ -642,25 +693,12 @@ function toggleExcerpt() {
   const isHidden = panel.classList.contains("hidden");
 
   if (isHidden) {
-    // ---- 展开：生成要点 ----
-    const source = news.content || news.rawSummary || "";
-    const points = extractKeyPoints(source, 4);
-
-    // 如实说明来源：中新网 RSS 只有 description（摘要），没有 content:encoded 正文。
-    // 代理通道已经用摘要全文兜底（见 rss.js 的 fetchViaProxy），
-    // 但那毕竟不是全文，这里必须写明，别让读者以为是完整正文。
-    const fromSummary = news.contentFromSummary === true;
-    const titleNote = fromSummary
-      ? "正文要点（该源只提供摘要，以下摘自 RSS 摘要全文）"
-      : "正文要点（自动摘抄）";
-
-    panel.innerHTML = points.length
-      ? `<div class="imm-excerpt-title">📌 ${escapeHtml(news.category)} · ${titleNote}</div>
-         <ul>${points.map(p => `<li>${escapeHtml(p)}</li>`).join("")}</ul>`
-      : `<div class="imm-excerpt-title">📌 ${escapeHtml(news.category)} · 正文要点</div>
-         <p class="imm-excerpt-empty">这个新闻源没有提供正文内容，
-         点右边「打开原文 ↗」可以看完整文章。</p>`;
-
+    // ---- 展开：先把面板显示出来（写"正在读取正文…"），正文到手后再填要点 ----
+    // 为什么先展开：正文要从文章页现取（RSS 只有一句导语），
+    // 先给反馈，别让用户点了没反应。
+    panel.innerHTML =
+      `<div class="imm-excerpt-title">📌 ${escapeHtml(news.category)} · 正文要点</div>
+       <p class="imm-excerpt-empty">正在读取正文…</p>`;
     panel.classList.remove("hidden");
     summary.classList.add("hidden");   // 摘抄展开时先收起一句话摘要，省地方
     btn.textContent = "收起摘抄 ✕";
@@ -668,6 +706,9 @@ function toggleExcerpt() {
     // 关键：给卡片加上"摘抄模式"，CSS 会把封面图收起、文字区放满整屏，
     // 摘抄区域因此拿到最大高度（见 style.css 的 .excerpt-open）
     $("immCard").classList.add("excerpt-open");
+
+    // 正文全文到位后再渲染要点（异步，不卡 UI）
+    renderExcerptPoints(news, panel);
   } else {
     // ---- 收起：恢复显示一句话摘要 ----
     panel.classList.add("hidden");
@@ -675,6 +716,48 @@ function toggleExcerpt() {
     btn.textContent = "📄 摘抄正文";
     $("immCard").classList.remove("excerpt-open");
   }
+}
+
+/**
+ * 渲染「正文要点」到摘抄面板
+ *
+ * 要点来源分两种情况，**必须在标题里如实标注**，不能把摘要冒充成全文：
+ *   ① 拿到文章页正文（contentFromSummary === false）→ 从全文里摘 5 条
+ *   ② 只有 RSS 的 description 导语            → 从导语里摘 4 条，并写明"该源只提供摘要"
+ *
+ * 为什么必须取全文：中新网 RSS 的 description 常常只有一句导语，
+ * "致信 / 讲话 / 报告"这类新闻的核心要点（讲了哪几点）全在文章页正文里，
+ * 只摘导语会让摘抄漏掉最重要的内容（2026-10-23 用户实测反馈）。
+ *
+ * @param {Object} news  新闻对象
+ * @param {HTMLElement} panel 摘抄面板（#immExcerpt）
+ */
+async function renderExcerptPoints(news, panel) {
+  // RSS 只给导语时，先从文章页把正文全文取回来（卡片渲染时已预取，通常已就绪）
+  if (news.contentFromSummary !== false) await fetchArticleBody(news);
+
+  // 用户可能在等待期间翻页或收起了摘抄：这时不要再往旧面板里塞内容
+  const livePanel = document.getElementById("immExcerpt");
+  if (latestNews[immIndex] !== news || !livePanel ||
+      livePanel.classList.contains("hidden") || livePanel !== panel) return;
+
+  const fromFullText = news.contentFromSummary === false;   // true = 文章页正文
+  const source = news.content || news.rawSummary || news.summary || "";
+  const points = extractKeyPoints(source, fromFullText ? 5 : 4);
+
+  // 标题要如实说明要点来源（undefined = rss2json 通道，它给的是完整 content）
+  const titleNote = fromFullText
+    ? "正文要点（摘自文章页正文）"
+    : (news.contentFromSummary === true
+        ? "正文要点（该源只提供摘要，以下摘自 RSS 摘要全文）"
+        : "正文要点（自动摘抄）");
+
+  panel.innerHTML = points.length
+    ? `<div class="imm-excerpt-title">📌 ${escapeHtml(news.category)} · ${titleNote}</div>
+       <ul>${points.map(p => `<li>${escapeHtml(p)}</li>`).join("")}</ul>`
+    : `<div class="imm-excerpt-title">📌 ${escapeHtml(news.category)} · 正文要点</div>
+       <p class="imm-excerpt-empty">没能读到这条新闻的正文，
+       点右边「打开原文 ↗」可以看完整文章。</p>`;
 }
 
 // 用事件委托绑定按钮：因为卡片每次翻页都会重新生成，

@@ -83,19 +83,26 @@ function extractKeyPoints(text, maxPoints = 4) {
   const clean = htmlToText(text);
   if (!clean) return [];
 
-  // 只看前 25 句：新闻的重点一般在开头，也避免文章太长时算得慢
-  const sentences = splitSentences(clean).slice(0, 25);
+  // 看前 40 句：致信 / 讲话 / 报告这类稿子，核心表述（"指出……""强调……"）
+  // 常常不在最开头，25 句会把后面真正的要点整段漏掉（2026-10-23 实测教训）
+  const sentences = splitSentences(clean).slice(0, 40);
   if (!sentences.length) return [];
 
   // 逐句打分
   const scored = sentences.map((s, i) => {
-    let score = 10 - i * 0.6;                              // 越靠前越重要
+    let score = 10 - i * 0.35;                             // 越靠前越重要（但别压得太狠）
 
     if (s.length >= 18 && s.length <= 90) score += 3;      // 长度适中，信息量足
+    if (s.length > 120) score -= 2;                        // 太长多半是铺陈，降权
     if (/\d|%|％|亿|万|元|美元/.test(s)) score += 2;        // 含具体数据
-    if (/表示|称|宣布|发布|推出|将|计划|预计|同比|增长|下降|首次/.test(s)) {
-      score += 2;                                          // 含关键动作词
-    }
+
+    // 核心表述（致信/讲话/报告里真正的要点就在这些词后面）
+    if (/指出|强调|提出|希望|呼吁|重申|倡议|主张|认为|要求|建议/.test(s)) score += 3;
+    // 一般动作词
+    if (/表示|宣布|发布|推出|将|计划|预计|同比|增长|下降|首次/.test(s)) score += 2;
+    // 主张/举措类表述
+    if (/坚持|推动|加强|促进|维护|倡导|共同|合作|安全|发展/.test(s)) score += 1;
+
     return { text: s, index: i, score: score };
   });
 
