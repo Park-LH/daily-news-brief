@@ -95,6 +95,19 @@ function Resolve-Python {
 }
 $pythonExe = Resolve-Python
 
+# 让「本服务」与「它调起的 python」用同一种编码（2026-10-23 实测修的坑）：
+#   · 本服务是隐藏控制台进程，实测它的 [Console]::OutputEncoding 是 **gb2312**；
+#   · python 在中文 Windows 上默认按 **GBK** 写 stdout/stderr。
+#   两边不一致时，PowerShell 拿到 python 的输出会按自己的编码去解码，
+#   中文轻则乱码、重则把 JSON 的结尾引号"吃掉"变成**非法 JSON**，
+#   ConvertFrom-Json 一抛异常就只剩一个笼统的 SCRIPT_FAILED（实测复现）。
+#   所以这里两边都显式设成 UTF-8，从根上对齐。
+#   影响范围：所有由本服务调起的 python（AI 出图 / 代码出图）。
+if ($pythonExe) {
+  try { [Console]::OutputEncoding = [Text.Encoding]::UTF8 } catch { }
+  $env:PYTHONIOENCODING = "utf-8"
+}
+
 # ---------- 启动前 1：探测本机局域网 IP（给手机访问用）----------
 # 优先取 192.168.* 这类家庭/办公网段地址，取不到再退到其他内网地址
 function Get-LanIP {
@@ -274,6 +287,48 @@ function Get-NodeText($node, $name) {
   $child = $node.SelectSingleNode("*[local-name()='$name']")
   if ($null -eq $child) { return "" }
   return ($child.InnerText | Out-String).Trim()
+}
+
+# ---------------------------------------------------------------------------
+# 读「脚本报错日志」的最后几行（P24：AI 出图 / 代码出图失败时用来报真实原因）
+#
+# 两个坑（都是 2026-10-23 实测踩到的）：
+#   ① 编码：PowerShell 的 `2>文件` 重定向写的是 **UTF-16LE**（带 FF FE 的 BOM），
+#      而 python 直写是 UTF-8/GBK。用 Get-Content 不带编码去读，中文必然乱码，
+#      所以这里**先看 BOM 判编码**，判不出来再用 UTF-8 严格解码、失败回落系统 ANSI。
+#   ② 噪音：原生命令的 stderr 会被 PowerShell 包装成 ErrorRecord，
+#      日志里混着 "CategoryInfo / RemoteException / 所在位置 / + …" 等壳自己的行，
+#      真正的报错反而看不见，所以要把这些行滤掉，只留真报错。
+# ---------------------------------------------------------------------------
+function Read-ErrTail($file, $maxLines = 3) {
+  if (-not (Test-Path $file)) { return "" }
+  $bytes = [IO.File]::ReadAllBytes($file)
+  if (-not $bytes -or $bytes.Length -eq 0) { return "" }
+
+  $enc = $null
+  if ($bytes.Length -ge 2 -and $bytes[0] -eq 0xFF -and $bytes[1] -eq 0xFE) {
+    $enc = [Text.Encoding]::Unicode                       # UTF-16LE（PS 5.1 重定向）
+  } elseif ($bytes.Length -ge 3 -and $bytes[0] -eq 0xEF -and $bytes[1] -eq 0xBB -and $bytes[2] -eq 0xBF) {
+    $enc = New-Object Text.UTF8Encoding($false)           # UTF-8 带 BOM
+  } else {
+    try {
+      $strict = New-Object Text.UTF8Encoding($false, $true)
+      $null = $strict.GetString($bytes)                   # 非法字节会抛异常
+      $enc = $strict
+    } catch {
+      $enc = [Text.Encoding]::Default                     # 回落系统 ANSI（GBK）
+    }
+  }
+
+  $lines = ($enc.GetString($bytes) -split "`r?`n") |
+           Where-Object {
+             $_.Trim() -ne "" -and
+             $_ -notmatch 'CategoryInfo|FullyQualifiedErrorId|RemoteException|NativeCommandError|所在位置' -and
+             $_ -notmatch '^\s*\+'
+           } |
+           ForEach-Object { ($_ -replace '^\s*[^:]{0,40}?python(\.exe)?\s*:\s*', '') }
+
+  return (($lines | Select-Object -Last $maxLines) -join " ").Trim()
 }
 
 # ---------- 主循环：等待并处理请求 ----------
@@ -788,20 +843,33 @@ while ($listener.IsListening) {
       [IO.File]::WriteAllText($promptFile, ($req.prompt | Out-String), [Text.Encoding]::UTF8)
 
       $genScript = Join-Path $root "tools\gen_news_image.py"
+      # ⚠️ --category / --keywords 必须写成 "--xxx=值" 的形式：
+      # PowerShell 调原生命令时会**丢掉空字符串参数**，写成 "--keywords" ""
+      # 在关键词为空时（实测：有些新闻抽不出关键词）会变成"缺值"，
+      # 紧接着 --category 会把后面的 --prompt-file 当成自己的值，
+      # 参数整体错位，python 报 unrecognized arguments
+      # （与 /api/code-image 2026-10-23 踩到的坑完全相同）。
+      $kwA = (($req.keywords | ForEach-Object { $_ }) -join ",")
+      $catA = ($req.category | Out-String).Trim()
       $pyArgs = @(
         $genScript,
         "--id", $id,
-        "--category", ($req.category | Out-String).Trim(),
-        "--keywords", (($req.keywords | ForEach-Object { $_ }) -join ","),
+        "--category=$catA",
+        "--keywords=$kwA",
         "--prompt-file", $promptFile,
         "--python", $pythonExe
       )
       if ($env:BUDDY_CLOUD_TOKEN) { $pyArgs += @("--token", $env:BUDDY_CLOUD_TOKEN) }
 
+      # 出错时把 python 的 stderr 留到日志文件里（P24）。
+      # 以前写成 2>$null，脚本一报错就只能看到一个笼统的 SCRIPT_FAILED，
+      # 真实原因（缺依赖 / 参数错 / 云端报错）全被吞掉，排查只能靠猜。
+      $aiErrFile = Join-Path $root ".data\ai-image-err.log"
+
       $result = $null
       try {
         # 生成一张图通常要十几秒到一分钟，这里同步等它完成
-        $raw = (& $pythonExe @pyArgs 2>$null | Out-String).Trim()
+        $raw = (& $pythonExe @pyArgs 2>$aiErrFile | Out-String).Trim()
         if ($raw) { $result = $raw | ConvertFrom-Json }
       } catch {
         $result = $null
@@ -812,6 +880,13 @@ while ($listener.IsListening) {
         Send-Json $ctx @{ ok = $true; url = $result.url; from = $result.from }
       } else {
         $msg = if ($result -and $result.message) { $result.message } else { "AI 补图未成功" }
+        if ((Test-Path $aiErrFile) -and -not $result) {
+          $errTail = Read-ErrTail $aiErrFile
+          if ($errTail) {
+            Write-Host "  [AI 出图] 失败，$id —— $errTail" -ForegroundColor Yellow
+            $msg = "$msg（详见 .data\ai-image-err.log：$($errTail.Substring(0, [Math]::Min(200, $errTail.Length)))）"
+          }
+        }
         Send-Json $ctx @{ ok = $false; error = if ($result) { $result.error } else { "SCRIPT_FAILED" }; message = $msg }
       }
       $ctx.Response.Close()
@@ -885,7 +960,8 @@ while ($listener.IsListening) {
       } else {
         $msgC = if ($resultC -and $resultC.message) { $resultC.message } else { "代码配图未成功" }
         if ((Test-Path $errFileC) -and -not $resultC) {
-          $tailC = (Get-Content $errFileC -Tail 3 -ErrorAction SilentlyContinue | Out-String).Trim()
+          # 与 AI 出图共用同一个读法：自动判编码 + 滤掉 PowerShell 的壳噪音
+          $tailC = Read-ErrTail $errFileC
           if ($tailC) { $msgC = "$msgC（详见 .data\code-image-err.log：$($tailC.Substring(0, [Math]::Min(200, $tailC.Length)))" }
         }
         Send-Json $ctx @{ ok = $false; error = if ($resultC) { $resultC.error } else { "SCRIPT_FAILED" }; message = $msgC }
