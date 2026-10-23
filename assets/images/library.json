@@ -1,32 +1,6 @@
 {
-  "version": 1,
+  "version": 2,
   "items": [
-    {
-      "id": "seed-pol-001",
-      "category": "政治",
-      "keywords": [
-        "政务",
-        "城市",
-        "公共事务"
-      ],
-      "file": "assets/images/gen/seed-pol-001.png",
-      "prompt": "﻿新闻分类：政治。城市公共事务与政务场景配图：明亮整洁的现代政务办公建筑内部中庭，通透的玻璃幕墙与柔和自然光，画面安静有序，写实摄影风格。画面要求：写实新闻配图风格，构图简洁，主体居中并留出安全边距，柔和自然光，高清细节；严禁出现任何文字、字母、数字、水印、Logo、签名、边框、角标、贴纸或图标；构图需同时适合方形与竖幅裁切。竖幅或方形构图均可，主体居中，四周留出安全边距。",
-      "source": "ai",
-      "createdAt": "2026-10-18"
-    },
-    {
-      "id": "seed-fin-001",
-      "category": "财经",
-      "keywords": [
-        "金融",
-        "港口",
-        "物流"
-      ],
-      "file": "assets/images/gen/seed-fin-001.png",
-      "prompt": "﻿新闻分类：财经。金融市场与贸易物流配图：清晨的港口集装箱码头与远处城市天际线，暖色调，写实摄影，画面开阔。画面要求：写实新闻配图风格，构图简洁，主体居中并留出安全边距，柔和自然光，高清细节；严禁出现任何文字、字母、数字、水印、Logo、签名、边框、角标、贴纸或图标；构图需同时适合方形与竖幅裁切。竖幅或方形构图均可，主体居中，四周留出安全边距。",
-      "source": "ai",
-      "createdAt": "2026-10-18"
-    },
     {
       "id": "seed-tech-001",
       "category": "科技",
@@ -39,6 +13,125 @@
       "prompt": "﻿新闻分类：科技。科技产业配图：简洁的芯片与电路板特写，冷色调金属质感，柔和侧光，写实微距摄影，画面干净。画面要求：写实新闻配图风格，构图简洁，主体居中并留出安全边距，柔和自然光，高清细节；严禁出现任何文字、字母、数字、水印、Logo、签名、边框、角标、贴纸或图标；构图需同时适合方形与竖幅裁切。竖幅或方形构图均可，主体居中，四周留出安全边距。",
       "source": "ai",
       "createdAt": "2026-10-18"
+    },
+    {
+      "id": "n15g688n",
+      "category": "生活",
+      "keywords": [
+        "王劲松",
+        "AI发展迅猛",
+        "但无法代替真人演员"
+      ],
+      "file": "assets/images/gen/n15g688n.png",
+      "prompt": "﻿新闻标题：王劲松：AI发展迅猛，但无法代替真人演员。新闻内容：中新网北京10月23日电(记者 上官云)“对于我来说，热爱表演几乎是一种本能，从业余排话剧、演小品开始，一直坚持到现在，没有放弃。。新闻分类：生活。请据此生成一张与这条新闻语义相符、风格合适的配图，不要照抄标题文字。画面要求：写实新闻配图风格，构图简洁，主体居中并留出安全边距，柔和自然光，高清细节；严禁出现任何文字、字母、数字、水印、",
+      "source": "ai",
+      "createdAt": "2026-10-23"
+    },
+    {
+      "id": "nzpwduu",
+      "category": "生活",
+      "keywords": [
+        "孩子误吸图钉不敢说",
+        "胸痛持续加重后就医",
+        "医生提醒"
+      ],
+      "file": "assets/images/gen/nzpwduu.png",
+      "prompt": "﻿新闻标题：孩子误吸图钉不敢说，胸痛持续加重后就医，医生提醒。新闻内容：中新网北京10月23日电 近日，首都医科大学附属首都儿童医学中心耳鼻咽喉头颈外科紧急救治一名气道误吸图钉的患儿。。新闻分类：生活。请据此生成一张与这条新闻语义相符、风格合适的配图，不要照抄标题文字。画面要求：写实新闻配图风格，构图简洁，主体居中并留出安全边距，柔和自然光，高清细节；严禁出现任何文字、字母、数字、水印、Logo、",
+      "source": "ai",
+      "createdAt": "2026-10-23"
+    },
+    {
+      "id": "seed-code-pol-001",
+      "category": "政治",
+      "keywords": [
+        "会议",
+        "合作",
+        "外交"
+      ],
+      "file": "assets/images/news-library/seed-code-pol-001.svg",
+      "kind": "code",
+      "source": "code",
+      "motif": "pillars",
+      "fingerprint": "0ef0aab60bd108a6",
+      "prompt": "",
+      "quality": 3,
+      "usageCount": 0,
+      "title": "国际合作论坛召开",
+      "createdAt": "2026-10-23"
+    },
+    {
+      "id": "seed-code-tech-001",
+      "category": "科技",
+      "keywords": [
+        "芯片",
+        "半导体"
+      ],
+      "file": "assets/images/news-library/seed-code-tech-001.svg",
+      "kind": "code",
+      "source": "code",
+      "motif": "circuit",
+      "fingerprint": "9c1ad44a75fa6f70",
+      "prompt": "",
+      "quality": 3,
+      "usageCount": 0,
+      "title": "芯片研发进展",
+      "createdAt": "2026-10-23"
+    },
+    {
+      "id": "seed-code-tech-002",
+      "category": "科技",
+      "keywords": [
+        "卫星",
+        "航天"
+      ],
+      "file": "assets/images/news-library/seed-code-tech-002.svg",
+      "kind": "code",
+      "source": "code",
+      "motif": "orbit",
+      "fingerprint": "885c1c79826b7a6b",
+      "prompt": "",
+      "quality": 3,
+      "usageCount": 0,
+      "title": "卫星发射任务",
+      "createdAt": "2026-10-23"
+    },
+    {
+      "id": "seed-code-fin-001",
+      "category": "财经",
+      "keywords": [
+        "金融",
+        "消费",
+        "贸易"
+      ],
+      "file": "assets/images/news-library/seed-code-fin-001.svg",
+      "kind": "code",
+      "source": "code",
+      "motif": "bars",
+      "fingerprint": "ae9ac31b4986a4f4",
+      "prompt": "",
+      "quality": 3,
+      "usageCount": 0,
+      "title": "消费市场回暖",
+      "createdAt": "2026-10-23"
+    },
+    {
+      "id": "seed-code-life-001",
+      "category": "生活",
+      "keywords": [
+        "健康",
+        "医疗",
+        "文化"
+      ],
+      "file": "assets/images/news-library/seed-code-life-001.svg",
+      "kind": "code",
+      "source": "code",
+      "motif": "wave",
+      "fingerprint": "7b6ad11a0381eebb",
+      "prompt": "",
+      "quality": 3,
+      "usageCount": 0,
+      "title": "基层医疗服务提升",
+      "createdAt": "2026-10-23"
     }
   ]
 }
