@@ -15,15 +15,6 @@
 $root = Split-Path -Parent $MyInvocation.MyCommand.Path
 $port = 8019
 
-# ---------- 独立文生图服务（质量档配图引擎）----------
-# 由 tools/t2i_server.py 单独启动，默认监听 8020；它没启动也不影响本服务，
-# /api/ai-image 会自动退回原来的云通道逻辑（见该接口里的转发代码）。
-# 想换端口就改这里，或用环境变量：setx BUDDY_T2I_PORT 8021
-$t2iPort = if ($env:BUDDY_T2I_PORT) { [int]$env:BUDDY_T2I_PORT } else { 8020 }
-$t2iUrl = "http://127.0.0.1:$t2iPort/api/ai-image"
-$t2iTimeoutSec = 100          # 一张图最多等 100 秒，超时就退回老逻辑
-$t2iEnabled = $true
-
 # 统计数据文件的存放位置
 $dataFile = Join-Path $root ".data\stats.json"
 
@@ -625,36 +616,210 @@ while ($listener.IsListening) {
       }
       $html = $htmlEnc.GetString($htmlBytes)
 
-      # ---- 第 6 步：只在正文区里找 /simg/cmshd/ 的第一张 ----
-      $cIdx = $html.IndexOf('class="content"')
+      # ---- 第 6 步：在正文区里找第一张新闻照片 ----
+      # 2026-10-24 改了两处：
+      #   ① 容器：原来匹配 class="content"（外层大容器），和 /api/article 取正文用的
+      #      content_maincontent_content 不是一个，经常取不到图 → 现在统一用它。
+      #   ② 取法：原来只认 /simg/cmshd/ 一种路径，漏掉很多正文图 →
+      #      现在把正文区里所有 <img> 的 src 都列出来，按排除清单过滤后取第一张。
+      $cIdx = $html.IndexOf('class="content_maincontent_content"')
       $body = ""
       if ($cIdx -ge 0) {
-        $len = [Math]::Min(40000, $html.Length - $cIdx)
+        $len = [Math]::Min(60000, $html.Length - $cIdx)
         $body = $html.Substring($cIdx, $len)
       }
 
       $image = $null
       if ($body.Length -gt 0) {
-        $m = [regex]::Match($body, '//i\d*\.chinanews\.com\.cn/simg/cmshd/[^"''\s>]+')
-        if ($m.Success) {
-          $cand = $m.Value
-          # 排除清单：模板图 / 侧栏图 / 缩略图标记
-          if ($cand -notmatch 'fileftp' -and $cand -notmatch '_zsite' -and $cand -notmatch '_700x1000') {
-            # 相对协议 //i2... 补成 https://i2...
-            if ($cand.StartsWith("//")) { $cand = "https:" + $cand }
-            # 图片域名再校验一遍（防页面里出现别的域名的图）
-            $imgHost = ""
-            try { $imgHost = ([Uri]$cand).Host } catch { $imgHost = "" }
-            if ($imgHost -match '^i\d*\.chinanews\.com\.cn$') { $image = $cand }
+        foreach ($m in [regex]::Matches($body, '<img[^>]+src\s*=\s*["'']([^"'']+)["'']')) {
+          $cand = $m.Groups[1].Value
+          if ($cand -notmatch '\.(jpg|jpeg|png|webp)') { continue }        # 跳过 gif / 图标
+          if ($cand -match 'icon|logo|zsite|fileftp|weixin|qrcode|share|ad_') { continue }
+          if ($cand.StartsWith("//")) { $cand = "https:" + $cand }
+          elseif ($cand.StartsWith("/")) { $cand = "https://www.chinanews.com.cn" + $cand }
+          # 图片域名再校验一遍：只认中新网自己的图片域名，防页面里混进外站图
+          $imgHost = ""
+          try { $imgHost = ([Uri]$cand).Host } catch { $imgHost = "" }
+          if ($imgHost -match '(^|\.)chinanews\.com\.cn$') { $image = $cand; break }
+        }
+      }
+
+      # ---- 第 6.5 步：把原图下载到本地再返回 ----
+      # 为什么不用外链：源站外链有防盗链，而且过几天链接就失效了，
+      # 页面上会出现"昨天有图、今天空白"。落本地后一劳永逸。
+      $localRel = ""
+      if ($image) {
+        $ext = ".jpg"
+        if ($image -match '\.(png|jpeg|webp)') { $ext = "." + $Matches[1] }
+        $imgKey = [Math]::Abs($articleUrl.GetHashCode()).ToString()
+        $localRel = "assets/images/origin/$imgKey$ext"
+        $localAbs = Join-Path $root ($localRel -replace "/", "\")
+        if (-not (Test-Path $localAbs)) {
+          try {
+            New-Item -ItemType Directory -Path (Split-Path $localAbs) -Force | Out-Null
+            Invoke-WebRequest -Uri $image -OutFile $localAbs -UseBasicParsing -TimeoutSec 8 `
+                              -Headers @{ "User-Agent" = "Mozilla/5.0"; "Referer" = $articleUrl }
+          } catch {
+            $localRel = ""      # 下载失败就退回用外链（前端还有后两级兜底）
           }
         }
       }
 
-      Write-Host "  [取图] $($articleUrl.Split('/')[-1]) → $(if ($image) { $image } else { '无正文配图（走渐变底）' })"
+      Write-Host "  [取图] $($articleUrl.Split('/')[-1]) → $(if ($localRel) { '已存 ' + $localRel } elseif ($image) { $image } else { '无正文配图（走下一级）' })"
 
-      # ---- 第 7 步：写缓存并返回（只给 URL，不给 base64）----
-      $ImageCache[$articleUrl] = @{ time = (Get-Date); image = $image }
-      Send-Json $ctx @{ ok = $true; url = $articleUrl; image = $image; cached = $false }
+      # ---- 第 7 步：写缓存并返回 ----
+      # image 优先给本地路径（下不到才给源站外链），credit 供页面标注来源
+      $finalImg = if ($localRel) { $localRel } else { $image }
+      $ImageCache[$articleUrl] = @{ time = (Get-Date); image = $finalImg }
+      Send-Json $ctx @{
+        ok = $true
+        url = $articleUrl
+        image = $finalImg
+        credit = $(if ($finalImg) { "中新网" } else { "" })
+        cached = $false
+      }
+      $ctx.Response.Close()
+      continue
+    }
+
+    # ===== 接口 3.2：/api/stock-image 从网络取一张"意象图" =====
+    # 用在哪：文章页里没有正文照片时，按这条新闻的关键词去 Wikimedia Commons
+    # 找一张贴合主题的图（例如"芯片" → 芯片照片），比抽象几何图更贴题。
+    #
+    # 为什么是 Wikimedia Commons（2026-10-24 实测）：
+    #   原本计划用 Openverse（api.openverse.org，免密钥、聚合 CC 图），
+    #   但本机实测 **TCP 443 都连不上**（不是超时，是网络不可达），所以改用
+    #   同样免密钥、实测可用的 Commons。它的图多为 CC BY-SA / 公有领域，
+    #   **需要署名** —— 所以接口把作者和许可一起返回，页面角落要显示来源小字。
+    #
+    # 请求：GET /api/stock-image?q=关键词&id=新闻id
+    # 返回：{ ok, url, credit:{ author, license, source } }
+    if ($path -eq "/api/stock-image") {
+      if ($ctx.Request.HttpMethod -ne "GET") {
+        Send-Json $ctx @{ ok = $false; error = "METHOD_NOT_ALLOWED"; message = "请用 GET" } -statusCode 405
+        $ctx.Response.Close()
+        continue
+      }
+
+      $sq = ""
+      if ($ctx.Request.QueryString["q"]) { $sq = ($ctx.Request.QueryString["q"] | Out-String).Trim() }
+      $sidRaw = ""
+      if ($ctx.Request.QueryString["id"]) { $sidRaw = ($ctx.Request.QueryString["id"] | Out-String).Trim() }
+      $sid = [regex]::Replace($sidRaw, '[^A-Za-z0-9_\-]', '')
+      if ([string]::IsNullOrEmpty($sid)) { $sid = [Guid]::NewGuid().ToString("N").Substring(0, 10) }
+
+      if ([string]::IsNullOrEmpty($sq)) {
+        Send-Json $ctx @{ ok = $false; error = "MISSING_QUERY"
+                          message = "缺少 q 参数（按什么关键词找图）" } -statusCode 400
+        $ctx.Response.Close()
+        continue
+      }
+
+      # 本地已经有了就直接复用（同一条新闻不会重复下载）
+      $stockRel = "assets/images/stock/$sid.jpg"
+      $stockAbs = Join-Path $root ($stockRel -replace "/", "\")
+      $metaAbs = Join-Path $root ("assets/images/stock/$sid.json")
+      if (Test-Path $stockAbs) {
+        # 署名信息存在图旁边的 .json 里：缓存命中时也要能把作者/许可还回去，
+        # 否则 CC 许可要求的署名就丢了（2026-10-24 实测发现的真问题）
+        $cr = @{ source = "Wikimedia Commons" }
+        if (Test-Path $metaAbs) {
+          try {
+            $mj = (Get-Content $metaAbs -Raw -Encoding UTF8) | ConvertFrom-Json
+            $cr = @{ source = "Wikimedia Commons"; author = $mj.author; license = $mj.license }
+          } catch { }
+        }
+        Send-Json $ctx @{ ok = $true; url = $stockRel; cached = $true; credit = $cr }
+        $ctx.Response.Close()
+        continue
+      }
+
+      $apiUrl = "https://commons.wikimedia.org/w/api.php?action=query&generator=search" +
+                "&gsrsearch=" + [Uri]::EscapeDataString($sq) +
+                "&gsrnamespace=6&gsrlimit=8&prop=imageinfo" +
+                "&iiprop=url%7Cextmetadata&iiurlwidth=1200&format=json"
+
+      $picked = $null
+      try {
+        $sj = Invoke-RestMethod -Uri $apiUrl -TimeoutSec 8 -UseBasicParsing `
+                                -Headers @{ "User-Agent" = "daily-news-brief/1.0 (personal project)" }
+        $pages = @()
+        if ($sj.query -and $sj.query.pages) {
+          foreach ($p in $sj.query.pages.PSObject.Properties) {
+            $v = $p.Value
+            if ($v.imageinfo -and $v.imageinfo.Count -gt 0 -and $v.imageinfo[0].thumburl) {
+              $pages += $v
+            }
+          }
+        }
+        if ($pages.Count -gt 0) {
+          # 用新闻 id 决定从第几张开始取：同一关键词的不同新闻不会拿到同一张图。
+          # 一次准备最多 3 个候选，前面下载失败（限流/坏链）就换下一个，
+          # 而不是整条失败——实测 Commons 会返回 429 限流，换一张往往就成功。
+          $start = [Math]::Abs($sid.GetHashCode()) % $pages.Count
+          $candidates = @()
+          for ($i = 0; $i -lt 3 -and $i -lt $pages.Count; $i++) {
+            $candidates += $pages[($start + $i) % $pages.Count]
+          }
+        }
+      } catch {
+        $candidates = @()
+      }
+
+      if (-not $candidates -or $candidates.Count -eq 0) {
+        Send-Json $ctx @{ ok = $false; error = "NO_STOCK_IMAGE"
+                          message = "没找到合适的意象图（关键词：$sq）" }
+        $ctx.Response.Close()
+        continue
+      }
+
+      $picked = $null
+      $lastErr = ""
+      foreach ($cand in $candidates) {
+        $thumb = $cand.imageinfo[0].thumburl
+        try {
+          New-Item -ItemType Directory -Path (Split-Path $stockAbs) -Force | Out-Null
+          if (Test-Path $stockAbs) { Remove-Item $stockAbs -Force }   # 清掉上一次的半成品
+          Invoke-WebRequest -Uri $thumb -OutFile $stockAbs -UseBasicParsing -TimeoutSec 10 `
+                            -Headers @{ "User-Agent" = "daily-news-brief/1.0 (personal project)" }
+          $picked = $cand
+          break
+        } catch {
+          $lastErr = $_.Exception.Message
+          Start-Sleep -Milliseconds 400      # 被限流时稍等再换下一张
+        }
+      }
+
+      if (-not $picked) {
+        Send-Json $ctx @{ ok = $false; error = "DOWNLOAD_FAILED"
+                          message = "意象图下载失败（已换 $($candidates.Count) 张仍不行）：$lastErr" }
+        $ctx.Response.Close()
+        continue
+      }
+
+      $author = ""
+      $license = ""
+      try {
+        $em = $picked.imageinfo[0].extmetadata
+        if ($em.Artist) { $author = (($em.Artist.value) -replace '<[^>]+>', '').Trim() }
+        if ($em.LicenseShortName) { $license = $em.LicenseShortName.value }
+      } catch { }
+
+      # 把署名信息存到图旁边的 .json，供以后缓存命中时返回（CC 许可要求署名）
+      try {
+        $meta = @{
+          source = "Wikimedia Commons"; author = $author; license = $license
+          title = [string]$picked.title; query = $sq; downloadedAt = (Get-Date).ToString("s")
+        }
+        ($meta | ConvertTo-Json -Depth 4) | Out-File $metaAbs -Encoding utf8
+      } catch { }
+
+      Send-Json $ctx @{
+        ok = $true
+        url = $stockRel
+        cached = $false
+        credit = @{ source = "Wikimedia Commons"; author = $author; license = $license }
+      }
       $ctx.Response.Close()
       continue
     }
@@ -825,26 +990,6 @@ while ($listener.IsListening) {
       $reader = New-Object IO.StreamReader($ctx.Request.InputStream)
       $rawBody = $reader.ReadToEnd()
       $req = $rawBody | ConvertFrom-Json
-
-      # ---- 优先转发给独立文生图服务（质量档引擎，见 docs/配图引擎选型需求.md §14）----
-      # 它跑在另一个进程（默认 8020），由 tools/t2i_server.py 提供，
-      # 背后是 ComfyUI + FLUX.1-schnell 之类的大模型（需要 ≥12GB 显存的机器）。
-      # 为什么要转发而不是在这里直接跑：模型会吃满显存、偶尔崩，
-      # 放在主服务里一崩就把整个简报拖挂；独立进程崩了，下面这段会自动
-      # 退回老的 /api/ai-image 逻辑（云通道），页面不会受影响。
-      if ($t2iEnabled) {
-        try {
-          $t2iResp = Invoke-RestMethod -Uri $t2iUrl -Method Post -Body $rawBody `
-                     -ContentType "application/json" -TimeoutSec $t2iTimeoutSec
-          if ($t2iResp -and $t2iResp.ok) {
-            Send-Json $ctx $t2iResp
-            $ctx.Response.Close()
-            continue
-          }
-        } catch {
-          # 连不上 / 超时：静默走下面的老逻辑，不打扰用户
-        }
-      }
 
       # 文件名只保留安全字符，防止路径穿越
       $rawId = if ($req.id) { ($req.id | Out-String).Trim() } else { "" }
