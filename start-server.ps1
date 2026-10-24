@@ -15,6 +15,15 @@
 $root = Split-Path -Parent $MyInvocation.MyCommand.Path
 $port = 8019
 
+# ---------- 独立文生图服务（质量档配图引擎）----------
+# 由 tools/t2i_server.py 单独启动，默认监听 8020；它没启动也不影响本服务，
+# /api/ai-image 会自动退回原来的云通道逻辑（见该接口里的转发代码）。
+# 想换端口就改这里，或用环境变量：setx BUDDY_T2I_PORT 8021
+$t2iPort = if ($env:BUDDY_T2I_PORT) { [int]$env:BUDDY_T2I_PORT } else { 8020 }
+$t2iUrl = "http://127.0.0.1:$t2iPort/api/ai-image"
+$t2iTimeoutSec = 100          # 一张图最多等 100 秒，超时就退回老逻辑
+$t2iEnabled = $true
+
 # 统计数据文件的存放位置
 $dataFile = Join-Path $root ".data\stats.json"
 
@@ -814,7 +823,28 @@ while ($listener.IsListening) {
       }
 
       $reader = New-Object IO.StreamReader($ctx.Request.InputStream)
-      $req = ($reader.ReadToEnd()) | ConvertFrom-Json
+      $rawBody = $reader.ReadToEnd()
+      $req = $rawBody | ConvertFrom-Json
+
+      # ---- 优先转发给独立文生图服务（质量档引擎，见 docs/配图引擎选型需求.md §14）----
+      # 它跑在另一个进程（默认 8020），由 tools/t2i_server.py 提供，
+      # 背后是 ComfyUI + FLUX.1-schnell 之类的大模型（需要 ≥12GB 显存的机器）。
+      # 为什么要转发而不是在这里直接跑：模型会吃满显存、偶尔崩，
+      # 放在主服务里一崩就把整个简报拖挂；独立进程崩了，下面这段会自动
+      # 退回老的 /api/ai-image 逻辑（云通道），页面不会受影响。
+      if ($t2iEnabled) {
+        try {
+          $t2iResp = Invoke-RestMethod -Uri $t2iUrl -Method Post -Body $rawBody `
+                     -ContentType "application/json" -TimeoutSec $t2iTimeoutSec
+          if ($t2iResp -and $t2iResp.ok) {
+            Send-Json $ctx $t2iResp
+            $ctx.Response.Close()
+            continue
+          }
+        } catch {
+          # 连不上 / 超时：静默走下面的老逻辑，不打扰用户
+        }
+      }
 
       # 文件名只保留安全字符，防止路径穿越
       $rawId = if ($req.id) { ($req.id | Out-String).Trim() } else { "" }
