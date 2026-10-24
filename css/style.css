@@ -571,6 +571,27 @@ footer {
   object-position: top;
 }
 
+/* 图片来源署名（Wikimedia Commons 的 CC 许可**要求署名**，不标就是侵权）
+   只在大图（沉浸卡片）右下角显示一行小字；列表缩略图只有 86×86，
+   塞不下字（会糊住画面），改用 title 提示。 */
+.imm-media .img-credit {
+  position: absolute;
+  right: 8px;
+  bottom: 8px;
+  z-index: 2;
+  max-width: calc(100% - 16px);
+  font-size: 11px;
+  line-height: 1.3;
+  color: rgba(255, 255, 255, 0.9);
+  background: rgba(0, 0, 0, 0.42);
+  padding: 2px 6px;
+  border-radius: 4px;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  pointer-events: none;          /* 不挡翻页手势 */
+}
+
 /* 摘要 / 摘抄这两个可滚动文字区
    注意：外层 .immersive 设了 touch-action: none（防止橡皮筋），
    浏览器就不让子元素自己滚了，所以这两个区域的滚动由 js/app.js 手动处理

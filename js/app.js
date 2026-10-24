@@ -36,8 +36,14 @@ function showToast(msg) {
  * （escapeHtml 在 js/summarize.js 里定义，负责把 < > 这类符号变成普通文字）
  */
 function safeUrl(url) {
+  // ⚠️ 空地址必须先挡掉：new URL("", location.href) 会把空串解析成**页面自己的地址**
+  // （http://localhost:8019/），返回的结果反而是"合法且非空"的。
+  // 后果（2026-10-24 实测）：fillAllImages 里 `if (safeUrl(news.image)) return;`
+  // 会把"没有图"误判成"已有真图"，那批新闻就永远不会被配图——页面留空位。
+  const raw = String(url || "").trim();
+  if (!raw) return "";
   try {
-    const u = new URL(String(url || ""), location.href);
+    const u = new URL(raw, location.href);
     return (u.protocol === "http:" || u.protocol === "https:") ? u.href : "";
   } catch (e) {
     return "";         // 地址本身不合法，当作没有
@@ -171,7 +177,7 @@ const ARTICLE_URL_RE =
   /^https?:\/\/(?:www\.)?chinanews\.com\.cn(?:\/[a-z0-9-]{2,10})*\/\d{4}\/\d{1,2}-\d{1,2}\/\d+\.shtml\/?$/i;
 const ARTICLE_HOSTS = ["www.chinanews.com.cn", "chinanews.com.cn"];
 const IMAGE_API_PATH = "/api/image";
-const IMAGE_API_TIMEOUT_MS = 4000;   // 服务端自己 3 秒就放弃，这里只是兜底
+const IMAGE_API_TIMEOUT_MS = 8000;   // 服务端单线程，十几条排队时给足兜底时间
 const ARTICLE_API_PATH = "/api/article";        // 取文章页正文全文（给「摘抄正文」用）
 const ARTICLE_API_TIMEOUT_MS = 6000;  // 正文比图大一点，留 6 秒兜底
 
@@ -199,12 +205,21 @@ function isArticleUrl(url) {
  * @returns {Promise<string|null>} 图片地址，拿不到就是 null
  */
 async function fetchArticleImage(news) {
-  if (!news || news.imageApiDone) return news && news.image ? news.image : null;
+  // ⚠️ 这里返回的是**文章页正文里那张真实的照片**（news.originImage），
+  // 不是 news.image —— news.image 可能已经被补图流程填成"代码生成的占位图"了，
+  // 把它当成原图返回，就会出现"来源写着原图、其实是我们自己画的图"。
+  // （2026-10-24 实测踩到：日志里 from=origin，文件却是 .svg）
+  if (!news || news.imageApiDone) return news && news.originImage ? news.originImage : null;
   news.imageApiDone = true;
 
-  if (!isArticleUrl(news.link)) return null;   // 非文章页直接不发请求
+  // 非文章页直接不发请求
+  if (!isArticleUrl(news.link)) { news.originImage = null; return null; }
 
-  if (typeof location !== "undefined" && location.protocol === "file:") return null; // 没服务器
+  // 没服务器
+  if (typeof location !== "undefined" && location.protocol === "file:") {
+    news.originImage = null;
+    return null;
+  }
 
   const started = Date.now();
   const ctrl = new AbortController();
@@ -212,16 +227,21 @@ async function fetchArticleImage(news) {
   try {
     const r = await fetch(`${IMAGE_API_PATH}?url=${encodeURIComponent(news.link)}`,
                           { signal: ctrl.signal });
-    if (!r.ok) return null;
+    if (!r.ok) { news.originImage = null; return null; }
     const data = await r.json();
     const img = (data && data.ok && data.image) ? data.image : null;
     console.log(`[取图] ${(news.title || "").slice(0, 16)}… → `
-      + (img ? img : "无正文配图（走渐变底）") + ` · ${Date.now() - started}ms`
+      + (img ? img : "无正文配图（交给下一级：网络意象图）") + ` · ${Date.now() - started}ms`
       + (data && data.cached ? " · 命中缓存" : ""));
-    if (img) news.image = img;
+    news.originImage = img;                              // 无论有没有都记下来，避免重复请求
+    if (img) {
+      news.image = img;
+      news.imageCredit = (data && data.credit) || "";   // 供页面标注来源
+    }
     return img;
   } catch (e) {
-    console.log(`[取图] 失败，静默降级到渐变底：${e.message}`);
+    console.log(`[取图] 失败，交给下一级：${e.message}`);
+    news.originImage = null;
     return null;
   } finally {
     clearTimeout(timer);
@@ -645,6 +665,10 @@ function renderImmersiveCard() {
   // 图片地址同样要先过滤，只放行 http/https（见 safeUrl 的说明）
   const cover = safeUrl(news.image);
   const link = safeUrl(news.link);
+  // 来源署名：网络意象图（Wikimedia Commons）是 CC 许可，**必须署名**，
+  // 卡片每次都是重新渲染的，所以这里也要带上，不然翻页后署名就丢了
+  const creditText =
+    (typeof formatImageCredit === "function") ? formatImageCredit(news.imageCredit) : "";
 
   card.innerHTML = `
     <!-- 上半屏：封面图。没图时这里显示 data-category 对应的分类渐变底（见 style.css）；
@@ -655,6 +679,9 @@ function renderImmersiveCard() {
         ? `<img class="imm-cover" src="${escapeHtml(cover)}" alt="新闻封面"
              onload="this.classList.add('loaded')"
              onerror="this.remove()">`   // 图片打不开就撤掉，只留渐变底
+        : ""}
+      ${creditText
+        ? `<span class="img-credit" title="${escapeHtml(creditText)}">${escapeHtml(creditText)}</span>`
         : ""}
     </div>
 
@@ -1255,7 +1282,7 @@ $("btnGenerate").addEventListener("click", async () => {
     renderCategory("财经", finList);
     renderCategory("生活", lifeList);
 
-    // ---- 配图：所有新闻自动配图（图库 → 代码生成 → 可选的 AI 升级）----
+    // ---- 配图：所有新闻自动配图（原图 → 网络意象图 → 代码生成）----
     // 页面不放占位图标：拿到图就显示，拿不到（file:// 直开无后端）才保持渐变底
     shownNews = topNews;
     fillAllImages(topNews);
@@ -1267,6 +1294,9 @@ $("btnGenerate").addEventListener("click", async () => {
     latestNews = buildImmersiveList(todayNews);
     immIndex = 0;              // 从第一条开始
     renderImmersiveCard();
+    // 沉浸列表和列表页不是同一批（它按板块各取几条），
+    // 所以两边都要配图——以前只配了 topNews，导致沉浸里后面几条一直没图。
+    fillAllImages(latestNews);
 
     // ---- 阶段4：显示视图切换开关 ----
     // 如果上次用的是沉浸浏览、且这次确实有新闻，就自动进入沉浸视图，
