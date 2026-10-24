@@ -48,6 +48,17 @@ $ARTICLE_URL_PATTERN = '^https?://(?:www\.)?chinanews\.com\.cn(?:/[a-z0-9-]{2,10
 # 24 小时内存缓存：沉浸浏览来回翻页会重复请求同一篇，没必要每次都抓
 $IMAGE_CACHE_HOURS = 24
 $ImageCache = @{}
+# 原图内容哈希表（MD5 → 先用到它的文章）：
+# 同一张图只允许给一篇文章当"原图"。页面公共区的图（推荐位缩略图等）一旦
+# 漏进取图结果，第二篇文章再拿到它时在这里被拦下，当"无原图"处理。
+# 启动时把 origin 目录里已有的文件都登记进来，重启后去重照样生效。
+$script:OriginImgHash = @{}
+$originDirInit = Join-Path $root "assets\images\origin"
+if (Test-Path $originDirInit) {
+  Get-ChildItem $originDirInit -File | ForEach-Object {
+    try { $script:OriginImgHash[(Get-FileHash $_.FullName -Algorithm MD5).Hash] = "preload:" + $_.Name } catch { }
+  }
+}
 # 文章页正文缓存（/api/article 用）：与取图缓存分开存，互不干扰
 $ArticleCache = @{}
 
@@ -616,37 +627,57 @@ while ($listener.IsListening) {
       }
       $html = $htmlEnc.GetString($htmlBytes)
 
-      # ---- 第 6 步：在正文区里找第一张新闻照片 ----
-      # 2026-10-24 改了两处：
-      #   ① 容器：原来匹配 class="content"（外层大容器），和 /api/article 取正文用的
-      #      content_maincontent_content 不是一个，经常取不到图 → 现在统一用它。
-      #   ② 取法：原来只认 /simg/cmshd/ 一种路径，漏掉很多正文图 →
-      #      现在把正文区里所有 <img> 的 src 都列出来，按排除清单过滤后取第一张。
-      $cIdx = $html.IndexOf('class="content_maincontent_content"')
-      $body = ""
-      if ($cIdx -ge 0) {
-        $len = [Math]::Min(60000, $html.Length - $cIdx)
-        $body = $html.Substring($cIdx, $len)
-      }
-
+      # ---- 第 6 步：找这篇**文章自己**的照片 ----
+      # 2026-10-24 下午重写。上一版"从 content_maincontent_content 开始往后切
+      # 60000 字符、取第一张 <img>"出了大事：实测滚动新闻页这个容器只有 411 个
+      # 字符、一张图都没有，往后切的 60000 字符全是**页面公共区**（相关推荐缩略图、
+      # 专题位、推广横幅）——每篇文章的这部分长得一样。结果 20 个落地文件里
+      # 只有 5 张真实不同的图，一部电影的海报被 5 篇不相干的文章各自"捡"回来
+      # 当配图（同一张 35.9KB 的 jpg 落了 5 个文件名）。
+      #
+      # 现在的取法（宁缺毋滥）：
+      #   ① 只认 /simg/cmshd/ —— 中新网给**文章自己照片**用的目录，有就是有，
+      #     没有就如实返回"无"，绝不用页面公共区的图顶替（下一级意象图会补）；
+      #   ② 兜底：正文容器内的 <img>——但容器用 div 配平取**真实闭合**，
+      #     不再往后切 60000 字符（就是那一刀切进了公共区）。
       $image = $null
-      if ($body.Length -gt 0) {
-        foreach ($m in [regex]::Matches($body, '<img[^>]+src\s*=\s*["'']([^"'']+)["'']')) {
-          $cand = $m.Groups[1].Value
-          if ($cand -notmatch '\.(jpg|jpeg|png|webp)') { continue }        # 跳过 gif / 图标
-          if ($cand -match 'icon|logo|zsite|fileftp|weixin|qrcode|share|ad_') { continue }
-          if ($cand.StartsWith("//")) { $cand = "https:" + $cand }
-          elseif ($cand.StartsWith("/")) { $cand = "https://www.chinanews.com.cn" + $cand }
-          # 图片域名再校验一遍：只认中新网自己的图片域名，防页面里混进外站图
-          $imgHost = ""
-          try { $imgHost = ([Uri]$cand).Host } catch { $imgHost = "" }
-          if ($imgHost -match '(^|\.)chinanews\.com\.cn$') { $image = $cand; break }
+      $m = [regex]::Match($html, '//i\d*\.chinanews\.com\.cn/simg/cmshd/[^"''\s>]+\.(?:jpg|jpeg|png|webp)')
+      while ($m.Success) {
+        $cand = $m.Value
+        if ($cand.StartsWith("//")) { $cand = "https:" + $cand }
+        if ($cand -notmatch 'fileftp|_zsite') { $image = $cand; break }
+        $m = $m.NextMatch()
+      }
+      if (-not $image) {
+        # 兜底：真实正文容器内的 <img>（div 配平，只取容器自己的内容）
+        $cIdx = $html.IndexOf('class="content_maincontent_content"')
+        if ($cIdx -ge 0) {
+          $depth = 0
+          $slice = ""
+          foreach ($dm in [regex]::Matches($html.Substring($cIdx), '<div\b|</div>')) {
+            if ($dm.Value -eq "</div>") { $depth-- } else { $depth++ }
+            if ($depth -eq 0) { $slice = $html.Substring($cIdx, $dm.Index); break }
+          }
+          if ($slice) {
+            foreach ($im in [regex]::Matches($slice, '<img[^>]+src\s*=\s*["'']([^"'']+)["'']')) {
+              $cand = $im.Groups[1].Value
+              if ($cand -notmatch '\.(jpg|jpeg|png|webp)') { continue }
+              if ($cand -match 'icon|logo|zsite|fileftp|weixin|qrcode|share|ad_') { continue }
+              if ($cand.StartsWith("//")) { $cand = "https:" + $cand }
+              elseif ($cand.StartsWith("/")) { $cand = "https://www.chinanews.com.cn" + $cand }
+              $imgHost = ""
+              try { $imgHost = ([Uri]$cand).Host } catch { $imgHost = "" }
+              if ($imgHost -match '(^|\.)chinanews\.com\.cn$') { $image = $cand; break }
+            }
+          }
         }
       }
 
       # ---- 第 6.5 步：把原图下载到本地再返回 ----
       # 为什么不用外链：源站外链有防盗链，而且过几天链接就失效了，
       # 页面上会出现"昨天有图、今天空白"。落本地后一劳永逸。
+      # 下载完还要做**内容哈希去重**：同一张图（哪怕 URL 不同）今天已经给过
+      # 别的文章，就当"无原图"处理——这是页面公共图漏网时的最后一道闸。
       $localRel = ""
       if ($image) {
         $ext = ".jpg"
@@ -654,14 +685,32 @@ while ($listener.IsListening) {
         $imgKey = [Math]::Abs($articleUrl.GetHashCode()).ToString()
         $localRel = "assets/images/origin/$imgKey$ext"
         $localAbs = Join-Path $root ($localRel -replace "/", "\")
+        $downloaded = $true
         if (-not (Test-Path $localAbs)) {
+          $downloaded = $false
           try {
             New-Item -ItemType Directory -Path (Split-Path $localAbs) -Force | Out-Null
             Invoke-WebRequest -Uri $image -OutFile $localAbs -UseBasicParsing -TimeoutSec 8 `
                               -Headers @{ "User-Agent" = "Mozilla/5.0"; "Referer" = $articleUrl }
+            $downloaded = $true
           } catch {
             $localRel = ""      # 下载失败就退回用外链（前端还有后两级兜底）
           }
+        }
+        # 内容哈希去重（见 $script:OriginImgHash 的注释）
+        if ($downloaded -and (Test-Path $localAbs)) {
+          try {
+            $imgHash = (Get-FileHash $localAbs -Algorithm MD5).Hash
+            if ($script:OriginImgHash.ContainsKey($imgHash) -and
+                $script:OriginImgHash[$imgHash] -ne $articleUrl -and
+                $script:OriginImgHash[$imgHash] -notlike "preload:*") {
+              Remove-Item $localAbs -Force
+              Write-Host "  [取图] 这张图已给过 $($script:OriginImgHash[$imgHash].Split('/')[-1]) → 当作无原图（防一图多用）"
+              $localRel = ""
+            } else {
+              $script:OriginImgHash[$imgHash] = $articleUrl
+            }
+          } catch { }
         }
       }
 

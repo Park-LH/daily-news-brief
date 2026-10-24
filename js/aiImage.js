@@ -37,7 +37,9 @@ const AI_IMAGE = {
   codeEndpoint: "/api/code-image",            // 第三级：代码生成（不用密钥，毫秒级）
   originTimeoutMs: 8000,                      // 抓原图的等待上限（抓不到就往下一级走）
   stockTimeoutMs: 12000,                      // 找意象图的等待上限（含下载图的时间）
-  cachePrefix: "aiimg:",                      // localStorage 缓存前缀
+  cachePrefix: "aiimg2:",                     // localStorage 缓存前缀
+  // ↑ v2：2026-10-24 取原图逻辑重写前的缓存里存着"页面公共区"的图
+  //   （一部电影的海报被当成多篇文章的原图），升前缀让旧缓存全部作废重取。
   autoAll: true,                              // 所有新闻（各主题/板块）都自动配图，不再留渐变底
 };
 
