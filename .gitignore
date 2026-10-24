@@ -4,6 +4,15 @@
 # AI 运行时生成的配图（随时可重新生成，不进仓库）
 assets/images/gen/
 
+# 运行时**下载**的配图，都不进仓库：
+#   origin/ 是新闻正文里的照片（有版权，不能分发）
+#   stock/  是 Wikimedia Commons 的图（只是缓存，随时可再下）
+assets/images/origin/
+assets/images/stock/
+
+# 代码生成的配图（本地随时可再生成，不进仓库）
+assets/images/news-library/*.svg
+
 # Python 运行缓存（tools/ 下的脚本编译产物）
 __pycache__/
 

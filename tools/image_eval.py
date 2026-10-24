@@ -1,10 +1,13 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-t2i_eval.py —— 配图质量评测器（把"好不好"变成可判定的数字）
+image_eval.py —— 配图质量评测器（把"好不好"变成可判定的数字）
 =============================================================
 
-对应 docs/配图引擎选型需求.md §10.3：避免拍脑袋，用固定数据集 + 固定指标打分。
+原名 t2i_eval.py。2026-10-24 起改名：文生图（开源大模型）方案已放弃，
+但**配图质量标准没有变**——现在用它来检查新配图流程的产物：
+文章页原图（assets/images/origin/）、网络意象图（assets/images/stock/）、
+代码生成图（assets/images/gen/）。
 
 能自动判定的（只要 pillow，本机实测已装）：
   1. 尺寸     ：是否 1200×1200（文档 §3 要求方图）
@@ -18,9 +21,9 @@ t2i_eval.py —— 配图质量评测器（把"好不好"变成可判定的数�
   7. CLIP 图文契合度（--clip，需要 torch + transformers）
 
 用法：
-  python tools/t2i_eval.py --dir assets/images/gen
-  python tools/t2i_eval.py --dir assets/images/gen --csv .data/t2i_eval.csv
-  python tools/t2i_eval.py --selftest      # 自检：造两张图验证判定逻辑（必跑）
+  python tools/image_eval.py --dir assets/images/gen
+  python tools/image_eval.py --dir assets/images/gen --csv .data/image_eval.csv
+  python tools/image_eval.py --selftest      # 自检：造两张图验证判定逻辑（必跑）
 """
 
 import argparse
