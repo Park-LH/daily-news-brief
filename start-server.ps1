@@ -59,6 +59,60 @@ if (Test-Path $originDirInit) {
     try { $script:OriginImgHash[(Get-FileHash $_.FullName -Algorithm MD5).Hash] = "preload:" + $_.Name } catch { }
   }
 }
+
+# ---------- 站内列表页缩略图映射（补"文章页没图"的那批新闻）----------
+# 2026-10-24 实测：中新网很多短讯的文章页正文里根本没有图（cmshd 命中率只有 ~12%），
+# 但站内的**列表页**每条新闻链接里自带缩略图（同一个 cmshd 图库）。
+# 所以抓一次列表页，建立 "文章 ID → 缩略图" 的映射，取原图时先查它。
+#
+# 取图边界很关键：只在 `<a href="/xx/2026/xx-xx/<id>.shtml"> ... </a>` **锚点内部**
+# 取 <img>。实测"链接附近就近取图"会把共用横幅算进去（两篇新闻指向同一张推广图），
+# 限定在锚点内之后，20 条映射里 0 条重复。
+$script:ListImgMap = @{}
+$script:ListImgMapTime = Get-Date "2000-01-01"
+# 实测能抓到的栏目列表页就这几个（其余 /gn/、/cj/、/gj/、/cul/ 等要么 404 要么空壳），
+# 加起来能覆盖约 50 篇有站内缩略图的新闻
+$LIST_IMG_PAGES = @(
+  "https://www.chinanews.com.cn/",
+  "https://www.chinanews.com.cn/china/",
+  "https://www.chinanews.com.cn/life/",
+  "https://www.chinanews.com.cn/sports/",
+  "https://www.chinanews.com.cn/world/",
+  "https://www.chinanews.com.cn/edu/",
+  "https://www.chinanews.com.cn/finance/"
+)
+$LIST_IMG_TTL_MIN = 30        # 列表页 30 分钟刷一次就够了
+
+function Refresh-ListImgMap {
+  if ($script:ListImgMap.Count -gt 0 -and
+      ((Get-Date) - $script:ListImgMapTime).TotalMinutes -lt $LIST_IMG_TTL_MIN) { return }
+  $new = @{}
+  foreach ($p in $LIST_IMG_PAGES) {
+    try {
+      $lh = (Invoke-WebRequest -Uri $p -UseBasicParsing -TimeoutSec 12 `
+                               -Headers @{ "User-Agent" = "Mozilla/5.0" }).Content
+      $rx = '<a\s+[^>]*href="(/[a-z]+/20\d\d/\d{2}-\d{2}/(\d+)\.shtml)"[^>]*>(.*?)</a>'
+      foreach ($m in [regex]::Matches($lh, $rx, [Text.RegularExpressions.RegexOptions]::Singleline)) {
+        $aid = $m.Groups[2].Value
+        if ($new.ContainsKey($aid)) { continue }
+        $im = [regex]::Match($m.Groups[3].Value,
+                             '(?i)(?:src|_src|data-src)\s*=\s*["'']((?:https?:)?//[^"'']+\.(?:jpg|jpeg|png))["'']')
+        if ($im.Success) {
+          $iu = $im.Groups[1].Value
+          if ($iu.StartsWith("//")) { $iu = "https:" + $iu }
+          $new[$aid] = $iu
+        }
+      }
+    } catch { }
+  }
+  if ($new.Count -gt 0) { $script:ListImgMap = $new; $script:ListImgMapTime = Get-Date }
+}
+
+# 意象图去重用：本次运行已经选过的 Commons 页面 id，避免多篇新闻拿到同一系列图
+# （实测 4 篇新闻拿到同一作者的图，看着像"配图用错"）
+$script:StockUsedPages = @{}
+# 同一作者的图本批也只用一张（避免多篇新闻配到同系列图，观感像"配图用错"）
+$script:StockUsedAuthors = @{}
 # 文章页正文缓存（/api/article 用）：与取图缓存分开存，互不干扰
 $ArticleCache = @{}
 
@@ -191,6 +245,16 @@ if (-not (Test-Path $dataFile)) {
   "{}" | Out-File -FilePath $dataFile -Encoding utf8
   Write-Host "已自动创建空数据文件: .data\stats.json"
 }
+
+# ---------- 启动前 3：预热站内列表页缩略图映射 ----------
+# 放在这里而不是第一次请求时才抓：抓 7 个列表页要几秒，
+# 如果拖到第一个 /api/image 请求里，前端 8 秒超时就被掐断了。
+# 抓不到也没关系（Refresh-ListImgMap 内部已 try/catch）。
+try {
+  $t0 = Get-Date
+  Refresh-ListImgMap
+  Write-Host "  站内列表页缩略图映射：$($script:ListImgMap.Count) 条（$([int]((Get-Date)-$t0).TotalMilliseconds)ms）"
+} catch { }
 
 $listener = New-Object System.Net.HttpListener
 if ($lanMode) { $listener.Prefixes.Add("http://+:$port/") } else { $listener.Prefixes.Add("http://localhost:$port/") }
@@ -648,8 +712,18 @@ while ($listener.IsListening) {
         if ($cand -notmatch 'fileftp|_zsite') { $image = $cand; break }
         $m = $m.NextMatch()
       }
+      # ② 站内列表页缩略图：文章页正文没图（短讯常见）时，列表页那条新闻的
+      #    缩略图就是这篇文章自己的图——按文章 ID 精确对应（见 Refresh-ListImgMap）
+      if (-not $image -and $articleUrl -match '/(\d+)\.shtml$') {
+        $artId = $Matches[1]
+        try { Refresh-ListImgMap } catch { }
+        if ($script:ListImgMap.ContainsKey($artId)) {
+          $image = $script:ListImgMap[$artId]
+        }
+      }
+
       if (-not $image) {
-        # 兜底：真实正文容器内的 <img>（div 配平，只取容器自己的内容）
+        # ③ 兜底：真实正文容器内的 <img>（div 配平，只取容器自己的内容）
         $cIdx = $html.IndexOf('class="content_maincontent_content"')
         if ($cIdx -ge 0) {
           $depth = 0
@@ -750,10 +824,24 @@ while ($listener.IsListening) {
         continue
       }
 
+      # ⚠️ 查询串必须**显式按 UTF-8 解码**（2026-10-24 实测踩的坑）：
+      # 直接用 $ctx.Request.QueryString 时，中文关键词会被按系统 ANSI（GBK）解码，
+      # 变成"绉戞妧"这样的乱码发给 Commons，结果永远搜不到 → 中文查询全部落空，
+      # 只能退回板块英文泛词，意象图自然不贴题。
       $sq = ""
-      if ($ctx.Request.QueryString["q"]) { $sq = ($ctx.Request.QueryString["q"] | Out-String).Trim() }
       $sidRaw = ""
-      if ($ctx.Request.QueryString["id"]) { $sidRaw = ($ctx.Request.QueryString["id"] | Out-String).Trim() }
+      try {
+        $ru = $ctx.Request.RawUrl
+        $qm = $ru.IndexOf("?")
+        if ($qm -ge 0) {
+          $qs = [System.Web.HttpUtility]::ParseQueryString($ru.Substring($qm + 1), [Text.Encoding]::UTF8)
+          if ($qs["q"]) { $sq = $qs["q"] }
+          if ($qs["id"]) { $sidRaw = $qs["id"] }
+        }
+      } catch {
+        if ($ctx.Request.QueryString["q"]) { $sq = ($ctx.Request.QueryString["q"] | Out-String).Trim() }
+        if ($ctx.Request.QueryString["id"]) { $sidRaw = ($ctx.Request.QueryString["id"] | Out-String).Trim() }
+      }
       $sid = [regex]::Replace($sidRaw, '[^A-Za-z0-9_\-]', '')
       if ([string]::IsNullOrEmpty($sid)) { $sid = [Guid]::NewGuid().ToString("N").Substring(0, 10) }
 
@@ -783,8 +871,11 @@ while ($listener.IsListening) {
         continue
       }
 
+      # 在**搜索这一步**就只要 JPEG 照片（filemime:image/jpeg）：
+      # 实测不限制时，搜"欧盟"会返回 PDF、搜"互联网"返回 .wav、搜"AI"返回图标 png，
+      # 事后靠扩展名筛既漏又浪费请求额度，直接在查询里限定最干净。
       $apiUrl = "https://commons.wikimedia.org/w/api.php?action=query&generator=search" +
-                "&gsrsearch=" + [Uri]::EscapeDataString($sq) +
+                "&gsrsearch=" + [Uri]::EscapeDataString($sq + " filemime:image/jpeg") +
                 "&gsrnamespace=6&gsrlimit=8&prop=imageinfo" +
                 "&iiprop=url%7Cextmetadata&iiurlwidth=1200&format=json"
 
@@ -797,18 +888,40 @@ while ($listener.IsListening) {
           foreach ($p in $sj.query.pages.PSObject.Properties) {
             $v = $p.Value
             if ($v.imageinfo -and $v.imageinfo.Count -gt 0 -and $v.imageinfo[0].thumburl) {
+              # 只要**真照片**：Commons 的搜索会把 PDF、音频、视频、矢量图一起搜出来
+              # （实测：搜"欧盟"返回一本 PDF，搜"互联网"返回一个 .wav，
+              #   搜"AI"返回一个图标 png——拿来当新闻配图就是"配图用错"）。
+              $t = [string]$v.title
+              if ($t -match '\.(pdf|webm|wav|ogv|oga|svg|tif|tiff|mid|flac|gif)$') { continue }
               $pages += $v
             }
           }
+          # 照片优先：png 常常是图标/示意图，jpg/jpeg 才是照片
+          $photos = @($pages | Where-Object { [string]$_.title -match '\.(jpg|jpeg)$' })
+          if ($photos.Count -gt 0) { $pages = $photos }
         }
         if ($pages.Count -gt 0) {
+          # 先排除本次运行已经给别的文章用过的图（$script:StockUsedPages）：
+          # 同板块的新闻关键词相近，候选池几乎一样，不去重就会出现"几篇新闻
+          # 配了同一作者的同系列图"，看着就像配图用错。
+          $fresh = @($pages | Where-Object { -not $script:StockUsedPages.ContainsKey([string]$_.pageid) })
+          if ($fresh.Count -eq 0) { $fresh = $pages }      # 全用过了才允许重复
+          # 再排除"作者本批已用过"的：同板块新闻关键词相近，候选池高度重合，
+          # 只按图片去重还不够——会出现 4 篇新闻配了同一作者的同系列图，
+          # 观感就是"配图都用错成差不多的图"。
+          $byAuthor = @($fresh | Where-Object {
+            $a = ""
+            try { $a = (($_.imageinfo[0].extmetadata.Artist.value) -replace '<[^>]+>', '').Trim() } catch { }
+            (-not $a) -or (-not $script:StockUsedAuthors.ContainsKey($a))
+          })
+          if ($byAuthor.Count -gt 0) { $fresh = $byAuthor }
           # 用新闻 id 决定从第几张开始取：同一关键词的不同新闻不会拿到同一张图。
           # 一次准备最多 3 个候选，前面下载失败（限流/坏链）就换下一个，
           # 而不是整条失败——实测 Commons 会返回 429 限流，换一张往往就成功。
-          $start = [Math]::Abs($sid.GetHashCode()) % $pages.Count
+          $start = [Math]::Abs($sid.GetHashCode()) % $fresh.Count
           $candidates = @()
-          for ($i = 0; $i -lt 3 -and $i -lt $pages.Count; $i++) {
-            $candidates += $pages[($start + $i) % $pages.Count]
+          for ($i = 0; $i -lt 3 -and $i -lt $fresh.Count; $i++) {
+            $candidates += $fresh[($start + $i) % $fresh.Count]
           }
         }
       } catch {
@@ -845,6 +958,11 @@ while ($listener.IsListening) {
         $ctx.Response.Close()
         continue
       }
+
+      Write-Host "  [意象图] q=$sq → 候选=$($pages.Count) 可用=$($fresh.Count) 作者=$author → $stockRel"
+      # 记下这张已用过：后面的新闻不再挑它（见 $script:StockUsedPages 的注释）
+      if ($picked.pageid) { $script:StockUsedPages[[string]$picked.pageid] = $true }
+      if ($author) { $script:StockUsedAuthors[$author] = $true }
 
       $author = ""
       $license = ""

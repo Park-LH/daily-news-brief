@@ -36,10 +36,16 @@ const AI_IMAGE = {
   stockEndpoint: "/api/stock-image",          // 第二级：网络意象图（Wikimedia Commons）
   codeEndpoint: "/api/code-image",            // 第三级：代码生成（不用密钥，毫秒级）
   originTimeoutMs: 8000,                      // 抓原图的等待上限（抓不到就往下一级走）
-  stockTimeoutMs: 12000,                      // 找意象图的等待上限（含下载图的时间）
-  cachePrefix: "aiimg2:",                     // localStorage 缓存前缀
+  // 找意象图的等待上限（含下载图的时间）。
+  // ⚠️ 别调小：服务端是单线程，十几条新闻的请求要排队，
+  // 实测 9 秒超时会让大半请求在服务端"还在下载"时就被前端放弃——
+  // 结果图其实已经下好了，页面却停在保底图上。
+  stockTimeoutMs: 25000,
+  cachePrefix: "aiimg3:",                     // localStorage 缓存前缀
   // ↑ v2：2026-10-24 取原图逻辑重写前的缓存里存着"页面公共区"的图
   //   （一部电影的海报被当成多篇文章的原图），升前缀让旧缓存全部作废重取。
+  // ↑ v3：补上"站内列表页缩略图"这一级后，很多原来只能用意象图的新闻
+  //   现在能拿到站内原图，同样让旧缓存作废。
   autoAll: true,                              // 所有新闻（各主题/板块）都自动配图，不再留渐变底
 };
 
@@ -52,8 +58,90 @@ const STOCK_CATEGORY_SEED = {
   "政治": "government building",
   "科技": "technology",
   "财经": "finance economy",
-  "生活": "city life",
+  // "city life" 实测搜出来是静物画/教堂，换成更具体的街道场景
+  "生活": "city street",
 };
+
+/**
+ * 搜图用的"实体词提示表"：地名 + 机构 + 常见主题词
+ *
+ * 为什么要这张表（2026-10-24 实测）：Wikimedia Commons 是英文图库，
+ * **中文整句标题搜不到任何东西**（"唐登杰当选中共山西省委书记" → 0 条结果），
+ * 但**短的实体词**能搜到很贴题的图（"火箭" → NASA 火箭发射照片、
+ * "山西" → 山西的照片、"芯片" → 主板芯片特写）。
+ * 所以先从标题里认出实体词，拿它去搜，比把整条标题丢过去强得多。
+ */
+const STOCK_ENTITY_HINTS = [
+  // 国家 / 地区
+  "美国", "俄罗斯", "日本", "韩国", "英国", "法国", "德国", "意大利", "西班牙",
+  "加拿大", "澳大利亚", "印度", "巴西", "南非", "埃及", "伊朗", "以色列",
+  "乌克兰", "波兰", "荷兰", "瑞典", "挪威", "瑞士", "泰国", "越南", "新加坡",
+  "菲律宾", "朝鲜",
+  // ⚠️ 抽象机构名（欧盟 / 联合国 / 北约）不要放进来：Commons 里搜这些词
+  // 出来的是教堂浮雕、会议厅一类的图，跟新闻对不上（2026-10-24 实测）。
+  // 国内省份 / 城市
+  "北京", "上海", "天津", "重庆", "广州", "深圳", "杭州", "南京", "成都", "武汉",
+  "西安", "沈阳", "哈尔滨", "昆明", "贵阳", "兰州", "济南", "青岛", "大连", "厦门",
+  "苏州", "宁波", "温州", "长沙", "郑州", "合肥", "福州", "南昌", "太原", "石家庄",
+  "香港", "澳门", "台湾", "山西", "云南", "浙江", "江苏", "山东", "河南", "河北",
+  "湖南", "湖北", "广东", "广西", "四川", "陕西", "甘肃", "青海", "宁夏", "新疆",
+  "西藏", "内蒙古", "黑龙江", "吉林", "辽宁", "福建", "江西", "安徽", "贵州", "海南",
+  // 常见主题词（短，Commons 认得出）
+  "火箭", "卫星", "飞船", "航天", "芯片", "半导体", "量子", "机器人", "人工智能",
+  "台风", "地震", "洪水", "高铁", "地铁", "机场", "港口", "大桥", "风电", "光伏",
+  "油田", "煤矿", "钢铁", "汽车", "足球", "篮球", "奥运", "博物馆", "故宫", "长城",
+];
+
+/**
+ * 只留"拍得出照片"的具体事物
+ * 抽象词（AI / 算法 / 算力 / 5G / 互联网 / 大模型）在 Commons 里搜出来是
+ * 图标、示意图、演示视频，拿来当新闻配图就是错的——所以这张表只收实物。
+ */
+const STOCK_PHOTO_WORDS = [
+  "火箭", "卫星", "飞船", "航天", "宇宙", "天文",
+  "芯片", "半导体", "量子", "机器人",
+  "台风", "地震", "洪水", "暴雨", "大雪",
+  "高铁", "地铁", "机场", "港口", "大桥", "隧道",
+  "风电", "光伏", "核电", "油田", "煤矿", "钢铁",
+  "汽车", "足球", "篮球", "奥运", "亚运",
+  "博物馆", "故宫", "长城", "遗址", "考古",
+];
+
+/**
+ * 生成这搜图用的候选查询词（按顺序试，第一个能搜到结果的就用它）
+ * 顺序：标题里命中的实体词 → 标题里的 2 字实词 → 板块英文意象词
+ *
+ * ⚠️ 注意：extractNewsKeywords() 是按**空格**分词的，中文标题没有空格，
+ * 整条标题会被当成一个"词"——直接拿它去 Commons 搜，结果必为 0。
+ * 所以这里单独造词，不用它。
+ */
+function buildStockQueries(news) {
+  const title = String(news.title || "");
+  const out = [];
+
+  // ① 标题里命中的实体词（最贴题）
+  for (const e of STOCK_ENTITY_HINTS) {
+    if (title.indexOf(e) >= 0) out.push(e);
+  }
+  // 科技词表里**拍得出照片**的那些具体事物
+  // （"AI""算法""算力""5G"这类抽象词在 Commons 里搜出来是图标/示意图，不能用）
+  for (const k of STOCK_PHOTO_WORDS) {
+    if (title.indexOf(k) >= 0 && out.indexOf(k) < 0) out.push(k);
+  }
+
+  // ② 不再用"标题里截 2 个字"去凑关键词：实测截出来的多半是
+  //    "年轻""永远""第四"这种形容词/序数词，搜出来的图跟新闻毫无关系。
+  //    认不出实体词就直接走板块意象词，宁可泛一点，也不要错。
+
+  // ③ 兜底：板块英文意象词（Commons 是英文图库，这个词几乎一定有结果）
+  out.push(STOCK_CATEGORY_SEED[news.category] || "news");
+
+  // 只留 2 个候选：最贴题的那个 + 兜底词。
+  // 为什么不多试几个：服务端是单线程，每多一次查询就多几百毫秒到几秒，
+  // 候选 4 个时实测大批新闻在升级完成前就停在保底图上了（13/17 没换成意象图）。
+  const uniq = [...new Set(out)];
+  return uniq.length > 2 ? [uniq[0], uniq[uniq.length - 1]] : uniq;
+}
 
 /* ============================================================
    内部状态
@@ -213,11 +301,8 @@ async function requestOriginImage(news) {
 async function requestStockImage(news) {
   if (location.protocol === "file:") return null;
 
-  const seed = STOCK_CATEGORY_SEED[news.category] || "news";
-  const words = extractNewsKeywords(news).slice(0, 2).join(" ");
-  // 顺序有讲究：Commons 里中英混搜基本搜不到东西（实测 "technology 芯片" → 0 结果），
-  // 所以先按**中文关键词**搜（更贴题），搜不到再退回板块意象词（几乎一定有结果）。
-  const queries = words ? [words, seed] : [seed];
+  // 依次试候选词：实体词优先，全都没结果才用板块英文意象词（见 buildStockQueries）
+  const queries = buildStockQueries(news);
 
   for (const q of queries) {
     const controller = new AbortController();
@@ -411,7 +496,11 @@ function applyNewsImage(news, url, from, credit) {
 function formatImageCredit(credit) {
   if (!credit) return "";
   if (typeof credit === "string") return "图：" + credit;
-  const parts = ["图：" + (credit.source || "")];
+  const parts = [];
+  // 网络意象图不是这条新闻的照片，页面上必须说清楚，
+  // 否则读者会当成新闻原图（用户反馈的"配图用错"多半来自这种误会）。
+  const isStock = /Commons|Wikimedia|Unsplash|Pexels|Openverse/i.test(credit.source || "");
+  parts.push(isStock ? "意象图 · " + (credit.source || "") : "图：" + (credit.source || ""));
   if (credit.author) parts.push(compressText(credit.author, 24));
   if (credit.license) parts.push(credit.license);
   return parts.filter(Boolean).join(" · ");
