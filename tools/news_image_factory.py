@@ -83,7 +83,19 @@ DEFAULT_PALETTE = {"bg1": "#111827", "bg2": "#1f2937", "accent": "#94a3b8"}
 # 讲芯片画电路、讲卫星画轨道、讲股市画柱状、讲健康画波纹……
 # ---------------------------------------------------------------------------
 KEYWORD_MOTIFS = [
-    (("芯片", "半导体", "电路", "算力", "硬件", "计算机", "服务器", "操作系统"), "circuit"),
+    # —— 现实物品母题（2026-10-24 用户要求）——
+    # 配图里必须出现与新闻核心关键词**直接相关的现实物品**：
+    # 讲存储画硬盘、讲服务器画机柜、讲 AI 画电脑（屏幕上有界面）、讲芯片画芯片实物。
+    # 这几条放在最前面，优先于下面那些抽象母题。
+    # 先判更具体的"整机/机房"，再判"盘"：标题同时有"存储"和"服务器"时，
+    # 画机柜比画单块硬盘更贴题（实测"新一代存储服务器发布"曾判成 disk）
+    (("服务器", "机柜", "机房", "算力中心", "集群", "数据中心"), "server"),
+    (("存储", "硬盘", "固态", "磁盘", "闪存", "内存条", "云存储"), "disk"),
+    (("人工智能", "大模型", "算法", "AI", "深度学习", "机器学习", "神经网络",
+      "软件", "操作系统", "程序", "界面", "算力"), "laptop"),
+    (("芯片", "半导体", "晶圆", "集成电路", "处理器", "光刻"), "chip"),
+    # —— 抽象母题（上面没命中时）——
+    (("电路", "硬件", "计算机", "电子"), "circuit"),
     (("卫星", "航天", "火箭", "飞船", "宇宙", "天文", "探月", "空间站"), "orbit"),
     (("机器人", "智能制造", "工厂", "装备"), "cells"),
     (("电池", "充电", "新能源", "光伏", "储能", "电力"), "cells"),
@@ -99,7 +111,8 @@ KEYWORD_MOTIFS = [
 # 每个板块的兜底母题（关键词没命中时用），列表里有多个 → 按标题指纹选，仍有变化
 CATEGORY_MOTIFS = {
     "政治": ["city", "pillars", "nodes"],
-    "科技": ["circuit", "nodes", "orbit"],
+    # 科技兜底优先用**实物**母题（用户要求：画面里要有现实物品，不是抽象线条）
+    "科技": ["chip", "laptop", "disk", "circuit", "orbit"],
     "财经": ["bars", "nodes", "cells"],
     "生活": ["wave", "arcs", "peaks"],
 }
@@ -374,6 +387,187 @@ def motif_peaks(rng, accent):
     return "".join(parts)
 
 
+def motif_chip(rng, accent):
+    """芯片实物：中央方块 + 四周引脚 + 表面分区（芯片/半导体类新闻）"""
+    x0, y0, x1, y1 = _safe_box()
+    cx, cy = (x0 + x1) / 2, (y0 + y1) / 2
+    size = (x1 - x0) * 0.52
+    parts = []
+    # 封装主体
+    parts.append(
+        f'<rect x="{cx - size / 2:.0f}" y="{cy - size / 2:.0f}" width="{size:.0f}" '
+        f'height="{size:.0f}" rx="{size * 0.08:.0f}" fill="none" stroke="{accent}" '
+        f'stroke-width="6" opacity="0.95"/>'
+    )
+    # 表面分区（像芯片 die 的块）
+    inner = size * 0.62
+    for r_i in range(2):
+        for c_i in range(2):
+            bx = cx - inner / 2 + inner / 2 * c_i + inner * 0.04
+            by = cy - inner / 2 + inner / 2 * r_i + inner * 0.04
+            bs = inner / 2 - inner * 0.08
+            parts.append(
+                f'<rect x="{bx:.0f}" y="{by:.0f}" width="{bs:.0f}" height="{bs:.0f}" '
+                f'rx="{bs * 0.12:.0f}" fill="{accent}" opacity="{rng.uniform(0.18, 0.4):.2f}"/>'
+            )
+    # 四周引脚
+    n = 6
+    step = size / (n + 1)
+    for i in range(n):
+        off = -size / 2 + step * (i + 1)
+        pin_len = size * rng.uniform(0.10, 0.16)
+        for (dx, dy, horiz) in ((0, -1, False), (0, 1, False), (-1, 0, True), (1, 0, True)):
+            if horiz:
+                px = cx + dx * (size / 2)
+                py = cy + off
+                parts.append(
+                    f'<path d="M{px:.0f} {py:.0f} h{dx * pin_len:.0f}" stroke="{accent}" '
+                    f'stroke-width="4" opacity="0.8"/>'
+                )
+            else:
+                px = cx + off
+                py = cy + dy * (size / 2)
+                parts.append(
+                    f'<path d="M{px:.0f} {py:.0f} v{dy * pin_len:.0f}" stroke="{accent}" '
+                    f'stroke-width="4" opacity="0.8"/>'
+                )
+    return "".join(parts)
+
+
+def motif_disk(rng, accent):
+    """硬盘实物：盘体 + 盘片 + 磁头臂 + 指示灯（存储/数据中心类新闻）"""
+    x0, y0, x1, y1 = _safe_box()
+    w = (x1 - x0)
+    h = w * 0.62
+    bx = x0 + (w - w) / 2
+    by = cy_top = y0 + ((y1 - y0) - h) / 2
+    parts = []
+    # 盘体
+    parts.append(
+        f'<rect x="{bx:.0f}" y="{by:.0f}" width="{w:.0f}" height="{h:.0f}" '
+        f'rx="{h * 0.10:.0f}" fill="none" stroke="{accent}" stroke-width="6" opacity="0.95"/>'
+    )
+    # 盘片（同心圆）
+    cx = bx + w * 0.52
+    cy = cy_top + h * 0.5
+    r_out = h * 0.38
+    parts.append(
+        f'<circle cx="{cx:.0f}" cy="{cy:.0f}" r="{r_out:.0f}" fill="none" stroke="{accent}" '
+        f'stroke-width="4" opacity="0.85"/>'
+    )
+    parts.append(
+        f'<circle cx="{cx:.0f}" cy="{cy:.0f}" r="{r_out * 0.42:.0f}" fill="{accent}" '
+        f'opacity="{rng.uniform(0.25, 0.45):.2f}"/>'
+    )
+    parts.append(
+        f'<circle cx="{cx:.0f}" cy="{cy:.0f}" r="{r_out * 0.14:.0f}" fill="none" '
+        f'stroke="{accent}" stroke-width="3" opacity="0.8"/>'
+    )
+    # 磁头臂：从右下角伸向盘心
+    ax, ay = bx + w * 0.93, cy_top + h * 0.86
+    parts.append(
+        f'<path d="M{ax:.0f} {ay:.0f} L{cx + r_out * 0.62:.0f} {cy + r_out * 0.42:.0f}" '
+        f'stroke="{accent}" stroke-width="5" opacity="0.9"/>'
+    )
+    parts.append(
+        f'<rect x="{ax - h * 0.10:.0f}" y="{ay - h * 0.05:.0f}" width="{h * 0.20:.0f}" '
+        f'height="{h * 0.10:.0f}" rx="{h * 0.03:.0f}" fill="{accent}" opacity="0.75"/>'
+    )
+    # 指示灯
+    parts.append(
+        f'<circle cx="{bx + w * 0.06:.0f}" cy="{cy_top + h * 0.88:.0f}" r="{h * 0.045:.0f}" '
+        f'fill="{accent}" opacity="{rng.uniform(0.6, 0.95):.2f}"/>'
+    )
+    return "".join(parts)
+
+
+def motif_server(rng, accent):
+    """服务器机柜：竖排机架单元 + 硬盘位 + 指示灯（服务器/机房/算力中心类新闻）"""
+    x0, y0, x1, y1 = _safe_box()
+    parts = []
+    w = (x1 - x0) * 0.72
+    bx = x0 + ((x1 - x0) - w) / 2
+    units = rng.choice([5, 6])
+    uh = (y1 - y0) / (units + 0.6)
+    for i in range(units):
+        uy = y0 + uh * (i + 0.3)
+        # 机架单元外框
+        parts.append(
+            f'<rect x="{bx:.0f}" y="{uy:.0f}" width="{w:.0f}" height="{uh * 0.78:.0f}" '
+            f'rx="{uh * 0.10:.0f}" fill="none" stroke="{accent}" stroke-width="4" '
+            f'opacity="{rng.uniform(0.6, 0.95):.2f}"/>'
+        )
+        # 单元内的硬盘位
+        slots = rng.choice([3, 4])
+        sw = w * 0.16
+        for s in range(slots):
+            sx = bx + w * 0.08 + (w * 0.84 / slots) * s
+            parts.append(
+                f'<rect x="{sx:.0f}" y="{uy + uh * 0.18:.0f}" width="{sw:.0f}" '
+                f'height="{uh * 0.42:.0f}" rx="{sw * 0.14:.0f}" fill="{accent}" '
+                f'opacity="{rng.uniform(0.2, 0.55):.2f}"/>'
+            )
+        # 指示灯
+        parts.append(
+            f'<circle cx="{bx + w * 0.94:.0f}" cy="{uy + uh * 0.39:.0f}" r="{uh * 0.07:.0f}" '
+            f'fill="{accent}" opacity="{rng.uniform(0.55, 0.95):.2f}"/>'
+        )
+    return "".join(parts)
+
+
+def motif_laptop(rng, accent):
+    """笔记本电脑实物：屏幕 + 屏幕里的界面内容 + 键盘底座（AI/软件/算法类新闻）"""
+    x0, y0, x1, y1 = _safe_box()
+    parts = []
+    w = (x1 - x0)
+    # 屏幕外框（上）
+    sh = (y1 - y0) * 0.58
+    sx = x0
+    sy = y0
+    parts.append(
+        f'<rect x="{sx:.0f}" y="{sy:.0f}" width="{w:.0f}" height="{sh:.0f}" '
+        f'rx="{w * 0.035:.0f}" fill="none" stroke="{accent}" stroke-width="6" opacity="0.95"/>'
+    )
+    # 屏幕里的界面：标题条 + 若干内容行 + 一块图表区（不写字，见配图标准）
+    pad = w * 0.08
+    ix, iy = sx + pad, sy + pad
+    iw, ih = w - pad * 2, sh - pad * 2
+    parts.append(
+        f'<rect x="{ix:.0f}" y="{iy:.0f}" width="{iw * 0.45:.0f}" height="{ih * 0.16:.0f}" '
+        f'rx="{ih * 0.05:.0f}" fill="{accent}" opacity="{rng.uniform(0.6, 0.9):.2f}"/>'
+    )
+    rows = rng.choice([3, 4])
+    for r_i in range(rows):
+        ry = iy + ih * (0.28 + 0.12 * r_i)
+        rw = iw * rng.uniform(0.55, 1.0)
+        parts.append(
+            f'<rect x="{ix:.0f}" y="{ry:.0f}" width="{rw:.0f}" height="{ih * 0.06:.0f}" '
+            f'rx="{ih * 0.03:.0f}" fill="{accent}" opacity="{rng.uniform(0.25, 0.5):.2f}"/>'
+        )
+    # 图表区：几根柱子（暗示屏幕上是数据界面）
+    bars = 4
+    bh0 = ih * 0.30
+    for b in range(bars):
+        bw = iw * 0.12
+        bx = ix + (iw * 0.62) + b * (iw * 0.09)
+        bh = bh0 * rng.uniform(0.4, 1.0)
+        parts.append(
+            f'<rect x="{bx:.0f}" y="{iy + ih * 0.92 - bh:.0f}" width="{bw:.0f}" '
+            f'height="{bh:.0f}" rx="{bw * 0.2:.0f}" fill="{accent}" '
+            f'opacity="{rng.uniform(0.35, 0.7):.2f}"/>'
+        )
+    # 底座 / 键盘面（下）：一个扁梯形
+    base_top = sy + sh + (y1 - y0) * 0.05
+    base_h = (y1 - y0) * 0.16
+    inset = w * 0.06
+    parts.append(
+        f'<path d="M{sx + inset:.0f} {base_top:.0f} H{sx + w - inset:.0f} '
+        f'L{sx + w - inset * 0.2:.0f} {base_top + base_h:.0f} '
+        f'H{sx + inset * 0.2:.0f} Z" fill="none" stroke="{accent}" stroke-width="5" opacity="0.9"/>'
+    )
+    return "".join(parts)
+
+
 MOTIF_DRAWERS = {
     "circuit": motif_circuit,
     "orbit": motif_orbit,
@@ -385,6 +579,11 @@ MOTIF_DRAWERS = {
     "pillars": motif_pillars,
     "arcs": motif_arcs,
     "peaks": motif_peaks,
+    # 现实物品母题（2026-10-24 新增：用户要求配图里出现与主题直接相关的实物）
+    "chip": motif_chip,
+    "disk": motif_disk,
+    "server": motif_server,
+    "laptop": motif_laptop,
 }
 
 

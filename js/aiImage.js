@@ -108,8 +108,73 @@ const STOCK_PHOTO_WORDS = [
 ];
 
 /**
+ * 【主题 → 现实物品】映射表（2026-10-24 用户要求）
+ *
+ * 硬要求：**配图里必须出现与新闻核心关键词直接相关的现实物品**。
+ * 讲存储的要有硬盘 / 存储服务器，讲 AI 的要有电脑（屏幕上显示相关界面），
+ * 讲芯片的要有芯片实物……不能用抽象几何图，也不能拿不相关的风景照顶替。
+ *
+ * 为什么是**英文**词：Wikimedia Commons 是英文图库，中文"存储"实测搜出 **0 条**，
+ * 而 "hard disk drive" / "computer server rack" / "laptop computer screen" 都有结果。
+ * 所以命中中文主题后，要用它对应的英文实物词去搜。
+ */
+const STOCK_TOPIC_OBJECTS = [
+  { cn: ["存储", "硬盘", "固态", "磁盘", "内存", "数据中心", "服务器", "云存储", "闪存"],
+    en: ["hard disk drive", "computer server rack", "solid state drive"] },
+  { cn: ["芯片", "半导体", "晶圆", "集成电路", "CPU", "处理器", "光刻"],
+    en: ["computer chip", "silicon wafer", "motherboard"] },
+  { cn: ["人工智能", "AI", "大模型", "算法", "算力", "深度学习", "机器学习", "神经网络", "模型"],
+    en: ["laptop computer screen", "computer workstation", "computer monitor"] },
+  { cn: ["机器人", "机械臂", "智能制造", "无人"],
+    en: ["industrial robot", "robot arm"] },
+  { cn: ["量子"], en: ["quantum computer"] },
+  // ⚠️ 别写 "satellite"：Commons 里它几乎全是"卫星拍的照片"，不是卫星本体。
+  { cn: ["卫星", "航天", "空间站", "探月"], en: ["communications satellite", "spacecraft"] },
+  { cn: ["火箭", "飞船", "发射"], en: ["rocket launch", "space rocket"] },
+  { cn: ["手机", "通信", "5G", "6G", "基站", "终端"],
+    en: ["smartphone", "cell tower"] },
+  { cn: ["电池", "储能", "充电", "新能源"], en: ["lithium ion battery", "electric car charging"] },
+  { cn: ["光伏", "太阳能", "风电", "核电", "电力"], en: ["solar panel", "wind turbine"] },
+  { cn: ["高铁", "地铁", "铁路", "列车", "轨道"], en: ["high speed train", "subway train"] },
+  { cn: ["汽车", "车企", "整车"], en: ["automobile", "car factory"] },
+  { cn: ["港口", "航运", "船舶", "集装箱", "物流"], en: ["container ship", "container port"] },
+  { cn: ["股市", "证券", "基金", "银行", "交易所"], en: ["stock exchange", "bank building"] },
+  { cn: ["消费", "零售", "商超", "电商", "快递"], en: ["supermarket", "shopping mall"] },
+  { cn: ["医院", "医疗", "医生", "疫苗", "药品"], en: ["hospital", "vaccine"] },
+  { cn: ["肿瘤", "癌症", "疾病", "寿命", "健康", "研究"], en: ["hospital", "medical laboratory"] },
+  { cn: ["电影", "票房", "导演", "演员", "影片", "上映", "观众", "剧集"],
+    en: ["movie camera", "cinema"] },
+  { cn: ["粮食", "农业", "小麦", "水稻", "农田"], en: ["wheat field", "rice paddy"] },
+  { cn: ["楼市", "房地产", "住房"], en: ["apartment building"] },
+  { cn: ["足球", "篮球", "奥运", "赛事", "球员"], en: ["football match", "basketball game"] },
+  { cn: ["会议", "论坛", "峰会", "外交", "会谈"], en: ["conference hall", "summit meeting"] },
+  { cn: ["台风", "暴雨", "洪水", "地震", "雪灾"], en: ["typhoon", "flood"] },
+];
+
+/**
+ * 按新闻内容挑一个"主题实物"的英文查询词
+ * 同一主题有多个实物词时，按新闻 id 选一个——避免几条同类新闻都拿同一个物件。
+ */
+function stockTopicQuery(news) {
+  // 只按**标题**判主题：摘要里常有顺带提到的词（实测一条"操作系统产业联盟"
+  // 的科技新闻，摘要里提到"消费"，结果被判成零售主题配了超市图）。
+  const text = String(news.title || "");
+  for (const t of STOCK_TOPIC_OBJECTS) {
+    for (const w of t.cn) {
+      if (text.indexOf(w) >= 0) {
+        let h = 0;
+        const id = String(news.id || "");
+        for (let i = 0; i < id.length; i++) { h = (h * 31 + id.charCodeAt(i)) >>> 0; }
+        return t.en[h % t.en.length];
+      }
+    }
+  }
+  return "";
+}
+
+/**
  * 生成这搜图用的候选查询词（按顺序试，第一个能搜到结果的就用它）
- * 顺序：标题里命中的实体词 → 标题里的 2 字实词 → 板块英文意象词
+ * 顺序：**主题实物词（英文）** → 标题里的地名/实物（中文） → 板块英文意象词
  *
  * ⚠️ 注意：extractNewsKeywords() 是按**空格**分词的，中文标题没有空格，
  * 整条标题会被当成一个"词"——直接拿它去 Commons 搜，结果必为 0。
@@ -119,7 +184,12 @@ function buildStockQueries(news) {
   const title = String(news.title || "");
   const out = [];
 
-  // ① 标题里命中的实体词（最贴题）
+  // ⓪ **主题实物词**（最高优先级）：用户要求配图里必须有与核心关键词
+  //    直接相关的现实物品——讲存储给硬盘/服务器，讲 AI 给电脑（屏幕上有界面）。
+  const topic = stockTopicQuery(news);
+  if (topic) out.push(topic);
+
+  // ① 标题里命中的地名 / 机构 / 实物（中文短词）
   for (const e of STOCK_ENTITY_HINTS) {
     if (title.indexOf(e) >= 0) out.push(e);
   }
@@ -129,18 +199,22 @@ function buildStockQueries(news) {
     if (title.indexOf(k) >= 0 && out.indexOf(k) < 0) out.push(k);
   }
 
-  // ② 不再用"标题里截 2 个字"去凑关键词：实测截出来的多半是
-  //    "年轻""永远""第四"这种形容词/序数词，搜出来的图跟新闻毫无关系。
-  //    认不出实体词就直接走板块意象词，宁可泛一点，也不要错。
+  // ② 标题里的地名 / 机构 / 实物（中文短词，Commons 认得出）
+  for (const e of STOCK_ENTITY_HINTS) {
+    if (title.indexOf(e) >= 0) out.push(e);
+  }
+  for (const k of STOCK_PHOTO_WORDS) {
+    if (title.indexOf(k) >= 0 && out.indexOf(k) < 0) out.push(k);
+  }
 
   // ③ 兜底：板块英文意象词（Commons 是英文图库，这个词几乎一定有结果）
   out.push(STOCK_CATEGORY_SEED[news.category] || "news");
 
-  // 只留 2 个候选：最贴题的那个 + 兜底词。
-  // 为什么不多试几个：服务端是单线程，每多一次查询就多几百毫秒到几秒，
-  // 候选 4 个时实测大批新闻在升级完成前就停在保底图上了（13/17 没换成意象图）。
+  // 最多留 3 个候选：主题实物 → 实体词 → 板块词。
+  // 为什么不再多：服务端单线程，每多一次查询就多几百毫秒到几秒，
+  // 候选 4 个时实测大批新闻在升级完成前就停在保底图上（13/17 没换成意象图）。
   const uniq = [...new Set(out)];
-  return uniq.length > 2 ? [uniq[0], uniq[uniq.length - 1]] : uniq;
+  return uniq.length > 3 ? [uniq[0], uniq[1], uniq[uniq.length - 1]] : uniq;
 }
 
 /* ============================================================
