@@ -342,6 +342,8 @@ function preloadNeighborImages() {
  */
 function pickCategoryNews(sortedNews, category) {
   const quota = categoryQuota(category);
+  // 限流前的候选条数（排查"板块为空/条数不足"时，先分清是"候选就少"还是"被限流砍了"）
+  const candidate = sortedNews.filter(n => n.category === category).length;
 
   // 按源分组（组内保持时间顺序）
   const bySource = new Map();
@@ -372,18 +374,36 @@ function pickCategoryNews(sortedNews, category) {
     }
     if (!added) break;                                 // 所有源都取完了
   }
+
+  // 分环节条数（真机验收排查用，2026-10-24 加）：
+  // 一行看清 候选 → 限流上限 → 配额 → 实取，以及每个源各贡献了几条
+  const perSource = [...bySource]
+    .map(([src, arr]) => `${src} ${Math.min(used.get(src) || 0, arr.length)}/${arr.length}`)
+    .join("、") || "无";
+  console.log(`[限流] ${category}：候选 ${candidate} 条（${bySource.size} 个源，单源上限 ${cap}）`
+    + ` → 配额 ${quota} → 实取 ${picked.length} 条 ｜ 各源贡献：${perSource}`);
+
   return picked;
 }
 
 function buildListNews(sortedNews) {
   const CATEGORY_ORDER = ["政治", "科技", "财经", "生活"];
   const list = [];
+  const pickedByCat = {};
   for (const category of CATEGORY_ORDER) {
-    list.push(...pickCategoryNews(sortedNews, category));
+    const one = pickCategoryNews(sortedNews, category);
+    pickedByCat[category] = one.length;
+    list.push(...one);
   }
   // 拼好后重新按时间排一次，页面上的顺序仍是"最新在前"
   list.sort((a, b) => new Date(b.pubDate) - new Date(a.pubDate));
-  return list.slice(0, MAX_NEWS);
+
+  // 配额环节：拼齐多少条、按 MAX_NEWS 截取后剩多少条
+  const final = list.slice(0, MAX_NEWS);
+  console.log(`[配额] 四板块拼齐 ${list.length} 条 → 按 MAX_NEWS(${MAX_NEWS}) 截取后 ${final.length} 条`);
+  console.log(`[配额] 各板块实取：`
+    + CATEGORY_ORDER.map(c => `${c} ${pickedByCat[c] || 0}`).join(" ｜ "));
+  return final;
 }
 
 /**
@@ -524,10 +544,12 @@ function dedupeAndAssignCategories(newsList) {
   const poolCount = list.filter(n => n.inTechPool).length;
   const excluded = [];
   let techCount = 0;
+  let hitCount = 0;                                 // 命中科技关键词的条数（排除词打回前）
   for (const news of list) {
     if (!news.inTechPool) continue;                 // 不在池里的保持原板块
 
     const hitTech = filterByKeywords([news], TECH_KEYWORDS).length > 0;
+    if (hitTech) hitCount++;
     if (!hitTech) {
       // 综合滚动频道：没命中就不进任何板块（这些新闻其他频道已收录）
       if (news.poolOnly) news.category = "";
@@ -552,6 +574,10 @@ function dedupeAndAssignCategories(newsList) {
     console.log("[科技池] 命中但被排除词打回原板块的条目：");
     excluded.forEach((t, i) => console.log(`   ${i + 1}. ${t}`));
   }
+  // 板块互斥单独打一行：池里多少条、命中多少、被排除词打回多少、没命中留在原板块多少
+  console.log(`[板块互斥] 池中 ${poolCount} 条 → 命中关键词 ${hitCount} 条`
+    + `（其中被排除词打回 ${excluded.length} 条）→ 最终归科技 ${techCount} 条`
+    + `，未命中留在原板块 ${poolCount - hitCount} 条`);
 
   // 过滤掉没有板块的（只有 poolOnly 且未命中的会走到这里）
   const result = list.filter(news => news.category);
