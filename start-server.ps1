@@ -19,9 +19,15 @@ $port = 8019
 $dataFile = Join-Path $root ".data\stats.json"
 
 # ---------- 资源版本号（防缓存）----------
-# index.html 里写的都是占位符 ?v=__BUILD__，这里把 __BUILD__ 换成当天日期
-# 再发给浏览器（运行时替换）。磁盘上的 index.html 一个字都不动，
-# 所以 git 工作区永远是干净的，不会出现"一启动就冒出个已修改文件"。
+# 2026-10-26 改了设计方向：index.html 里**不再写占位符**，只写干净的
+# css/style.css、js/x.js。版本号由本服务在"发给浏览器那一刻"**注入**
+# （见文件末尾静态文件处理那段）。
+#
+# 为什么不再用占位符：它只有在本服务里才会被替换，一旦把站点部署到静态托管
+# （GitHub Pages 等），占位符会原样上线，版本号永远不变 → 用户一直看到旧页面。改成"源文件干净 + 服务端注入"后，
+# 静态环境最多是"没有版本号"（托管商自己的缓存策略兜底），
+# 不会再出现"版本号是个假占位符"这种静默失效。
+#
 # 日期每天变一次 → 浏览器每天都会重新下载 js/css，不用按 Ctrl+F5。
 $buildId = Get-Date -Format "yyyyMMdd"
 
@@ -59,6 +65,18 @@ if (Test-Path $originDirInit) {
     try { $script:OriginImgHash[(Get-FileHash $_.FullName -Algorithm MD5).Hash] = "preload:" + $_.Name } catch { }
   }
 }
+
+# ---------- 模板图（页面公共图）识别 ----------
+# 2026-10-27 实测发现的重大漏洞：**/simg/cmshd/ 并不等于"这篇文章自己的照片"**。
+# 当天最热的那张图会出现在**每一篇文章页**的公共区（实测 13 篇不同文章
+# 都"取到"同一个 cmshd 图 `031fae1aad…jpg`）。于是内容哈希去重明明命中并
+# 删掉了重复文件，页面却仍然一图多用。
+#
+# 判定办法：同一张图 URL 被**第二篇不同的文章**取到 → 它是页面公共区的模板图。
+# 一旦判定，就把它拉黑，并删掉先前给第一篇落的盘（那张图显示中的页面会
+# 因 404 触发前端兜底图，见 js/fallbackImage.js，不会留破图）。
+$script:ImgOwner = @{}        # 图片 URL -> @{ article = 文章 URL; local = 本地相对路径 }
+$script:ImgBlacklist = @{}    # 已判定为模板图的图片 URL
 
 # ---------- 站内列表页缩略图映射（补"文章页没图"的那批新闻）----------
 # 2026-10-24 实测：中新网很多短讯的文章页正文里根本没有图（cmshd 命中率只有 ~12%），
@@ -699,26 +717,33 @@ while ($listener.IsListening) {
       # 只有 5 张真实不同的图，一部电影的海报被 5 篇不相干的文章各自"捡"回来
       # 当配图（同一张 35.9KB 的 jpg 落了 5 个文件名）。
       #
-      # 现在的取法（宁缺毋滥）：
-      #   ① 只认 /simg/cmshd/ —— 中新网给**文章自己照片**用的目录，有就是有，
-      #     没有就如实返回"无"，绝不用页面公共区的图顶替（下一级意象图会补）；
-      #   ② 兜底：正文容器内的 <img>——但容器用 div 配平取**真实闭合**，
-      #     不再往后切 60000 字符（就是那一刀切进了公共区）。
+      # 现在的取法（宁缺毋滥，2026-10-27 又调整了**优先级**）：
+      #   ⓪ **站内列表页缩略图**（最可信）：列表页里 `<a href=…/<id>.shtml>`
+      #      锚点内的图就是这篇文章自己的缩略图，按文章 ID **精确一一对应**，
+      #      实测 20 条映射 0 重复。（2026-10-27 实测：cmshd 反而可能是热点模板图，
+      #      所以把它降级，列表页优先。）
+      #   ① /simg/cmshd/ —— 文章页里出现的文章照片目录（**要过模板图识别**）；
+      #   ② 兜底：正文容器内的 <img>——容器用 div 配平取**真实闭合**，
+      #      不再往后切 60000 字符（就是那一刀切进了公共区）。
       $image = $null
-      $m = [regex]::Match($html, '//i\d*\.chinanews\.com\.cn/simg/cmshd/[^"''\s>]+\.(?:jpg|jpeg|png|webp)')
-      while ($m.Success) {
-        $cand = $m.Value
-        if ($cand.StartsWith("//")) { $cand = "https:" + $cand }
-        if ($cand -notmatch 'fileftp|_zsite') { $image = $cand; break }
-        $m = $m.NextMatch()
-      }
-      # ② 站内列表页缩略图：文章页正文没图（短讯常见）时，列表页那条新闻的
-      #    缩略图就是这篇文章自己的图——按文章 ID 精确对应（见 Refresh-ListImgMap）
-      if (-not $image -and $articleUrl -match '/(\d+)\.shtml$') {
+
+      # ⓪ 站内列表页缩略图（按文章 ID 精确对应）
+      if ($articleUrl -match '/(\d+)\.shtml$') {
         $artId = $Matches[1]
         try { Refresh-ListImgMap } catch { }
         if ($script:ListImgMap.ContainsKey($artId)) {
           $image = $script:ListImgMap[$artId]
+        }
+      }
+
+      # ① 文章页里的 cmshd 图
+      if (-not $image) {
+        $m = [regex]::Match($html, '//i\d*\.chinanews\.com\.cn/simg/cmshd/[^"''\s>]+\.(?:jpg|jpeg|png|webp)')
+        while ($m.Success) {
+          $cand = $m.Value
+          if ($cand.StartsWith("//")) { $cand = "https:" + $cand }
+          if ($cand -notmatch 'fileftp|_zsite') { $image = $cand; break }
+          $m = $m.NextMatch()
         }
       }
 
@@ -744,6 +769,26 @@ while ($listener.IsListening) {
               if ($imgHost -match '(^|\.)chinanews\.com\.cn$') { $image = $cand; break }
             }
           }
+        }
+      }
+
+      # ---- 第 6.2 步：模板图识别（防"热点图被每篇文章当成本文照片"）----
+      # 见文件开头 $script:ImgOwner 的注释：同一张图被第二篇不同的文章取到，
+      # 就说明它在页面公共区，不是任何一篇文章自己的照片。
+      if ($image) {
+        if ($script:ImgBlacklist.ContainsKey($image)) {
+          Write-Host "  [取图] 命中模板图黑名单，弃用：$($image.Split('/')[-1])"
+          $image = $null
+        } elseif ($script:ImgOwner.ContainsKey($image) -and
+                  $script:ImgOwner[$image].article -ne $articleUrl) {
+          $script:ImgBlacklist[$image] = $true
+          $oldRel = $script:ImgOwner[$image].local
+          if ($oldRel) {
+            $oldAbs = Join-Path $root ($oldRel -replace "/", "\")
+            if (Test-Path $oldAbs) { Remove-Item $oldAbs -Force -ErrorAction SilentlyContinue }
+          }
+          Write-Host "  [取图] 该图同时出现在别的文章页 → 判定为页面公共图，弃用：$($image.Split('/')[-1])"
+          $image = $null
         }
       }
 
@@ -783,16 +828,23 @@ while ($listener.IsListening) {
               $localRel = ""
             } else {
               $script:OriginImgHash[$imgHash] = $articleUrl
+              # 记下"这张图归哪篇文章"，供模板图识别用（见 $script:ImgOwner）
+              $script:ImgOwner[$image] = @{ article = $articleUrl; local = $localRel }
             }
           } catch { }
         }
       }
 
-      Write-Host "  [取图] $($articleUrl.Split('/')[-1]) → $(if ($localRel) { '已存 ' + $localRel } elseif ($image) { $image } else { '无正文配图（走下一级）' })"
+      Write-Host "  [取图] $($articleUrl.Split('/')[-1]) → $(if ($localRel) { '已存 ' + $localRel } else { '无可用原图（重复/模板图/无图 → 走下一级）' })"
 
       # ---- 第 7 步：写缓存并返回 ----
-      # image 优先给本地路径（下不到才给源站外链），credit 供页面标注来源
-      $finalImg = if ($localRel) { $localRel } else { $image }
+      # ⚠️ 2026-10-27 修：以前这里写的是 `else { $image }`——本地拿不到就退回源站外链。
+      # 后果很严重：内容去重明明命中了、也把重复文件删了，却又把**同一张外链**
+      # 返回给第二篇、第三篇……（实测 13 篇新闻拿到同一个 cmshd 外链），
+      # 去重形同虚设，页面照样一图多用。
+      # 现在本地拿不到就**如实返回无图**，交给下一级（意象图）处理——
+      # "宁可没有原图，也不能给一张错的/重复的图"。
+      $finalImg = $localRel
       $ImageCache[$articleUrl] = @{ time = (Get-Date); image = $finalImg }
       Send-Json $ctx @{
         ok = $true
@@ -1326,11 +1378,17 @@ while ($listener.IsListening) {
     if (Test-Path $file -PathType Leaf) {
       $ext = [IO.Path]::GetExtension($file).ToLower()
 
-      # HTML：先把内容读成文本，把版本号占位符 __BUILD__ 换成当天日期再下发
-      # （只在内存里替换，源文件不写回磁盘）
+      # HTML：给 css/js 引用**注入**版本号 ?v=$buildId 再下发（只在内存里改，
+      # 源文件不写回磁盘，所以 git 工作区永远是干净的）。
+      # 已经带版本号的（发布脚本打过 ?v=xxx）保持原样，不重复追加。
       if ($ext -eq ".html") {
         $htmlText = [IO.File]::ReadAllText($file, [Text.Encoding]::UTF8)
-        $bytes = [Text.Encoding]::UTF8.GetBytes(($htmlText -replace '__BUILD__', $buildId))
+        # ① 先去掉可能已存在的版本号（发布脚本打过 ?v=xxx 的情况）
+        $htmlText = $htmlText -replace '(\.(?:css|js))\?v=[^"'' ]*', '$1'
+        # ② 再统一注入今天的版本号 → $1="$2?v=20261026"
+        $verRepl = '$1="$2?v=' + $buildId + '"'
+        $htmlText = $htmlText -replace '(href|src)="([^"]+\.(?:css|js))"', $verRepl
+        $bytes = [Text.Encoding]::UTF8.GetBytes($htmlText)
       } else {
         $bytes = [IO.File]::ReadAllBytes($file)
       }

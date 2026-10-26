@@ -4,13 +4,15 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>每日新闻简报 📰</title>
-<!-- 样式表带版本参数 ?v=：改动 CSS 后版本号一变，浏览器就会重新下载，
-     不会再拿旧的缓存。
-     这里刻意写成占位符 __BUILD__：磁盘上的文件永远是它，
-     由 start-server.ps1 在"发给浏览器那一刻"替换成当天日期（如 20261018），
-     源文件因此不会被改动、git 工作区始终是干净的。
-     详细说明见下方脚本注释 -->
-<link rel="stylesheet" href="css/style.css?v=__BUILD__">
+<!-- 样式表**不带**版本参数：源文件保持最干净的样子，任何环境下都能直接用。
+     版本号由 start-server.ps1 在"发给浏览器那一刻"注入（见文件末尾说明），
+     所以本地永远拿到最新 js/css；部署到静态托管时没有服务器注入，
+     就用下面的 tools/bump-asset-version.ps1 在发布前打上真实版本号。
+     ⚠️ 2026-10-26 修复：以前这里写的是一个"版本占位符"，它**只有在本地服务端
+     才会被替换**——部署到 GitHub Pages 时占位符原样上线，版本号永远不变，
+     用户会一直看到旧页面。这种"依赖运行时替换"的写法一旦离开本地环境就是
+     静默失效，已从源文件中彻底去掉（全仓库不再出现那个占位符）。 -->
+<link rel="stylesheet" href="css/style.css">
 </head>
 <body>
 <div class="app">
@@ -146,26 +148,25 @@
 
 <!-- 脚本按依赖顺序引入：先工具，再配置，再统计，最后主逻辑
      summarize.js 必须放在 config.js 前面，因为配置里的摘要功能要用到它
+     fallbackImage.js 必须在 aiImage.js 前面：配图三级拿不到图时，
+     由它纯前端现画一张兜底图（静态托管没有后端时全靠它）
 
-     【?v= 版本号是怎么变的（以后不用手动 Ctrl+F5）】
-     源文件里一律写占位符 ?v=__BUILD__，永远不要把它改成具体日期。
-
-     服务器（start-server.ps1）在把本文件发给浏览器的那一刻，
-     会把 __BUILD__ 替换成"当天日期"（如 20261018）再下发。
-     于是：
-       - 磁盘上的 index.html 永远不变 → git 工作区始终干净
-       - 浏览器每天拿到的版本号自动变 → js/css 不会被旧缓存挡住
-     再加上服务器对 .html/.js/.css 一律返回
-       Cache-Control: no-cache，双保险，普通刷新（F5）即可看到新内容。
-
-     注意：只有走 start-server 打开页面才有这个效果。
-     直接双击 index.html（file:// 方式）没有服务器，占位符会原样保留，
-     浏览器会把它当成版本号字符串用，同样能绕过缓存，不影响正常显示。 -->
-<script src="js/summarize.js?v=__BUILD__"></script>
-<script src="js/config.js?v=__BUILD__"></script>
-<script src="js/rss.js?v=__BUILD__"></script>
-<script src="js/stats.js?v=__BUILD__"></script>
-<script src="js/aiImage.js?v=__BUILD__"></script>
-<script src="js/app.js?v=__BUILD__"></script>
+     【资源版本号 ?v= 是怎么来的（改了 js/css 后不用手动 Ctrl+F5）】
+     1. **本地用 start-server 打开**：服务器把本文件发给浏览器时，
+        会给没有版本号的 css/js 引用**自动注入** ?v=当天日期（如 20261026），
+        磁盘上的源文件一个字都不改，git 工作区永远干净。
+     2. **部署到静态托管**（GitHub Pages 等，没有我们的服务器）：
+        发布前跑一次 tools/bump-asset-version.ps1，它会给 css/js 打上
+        ?v=<提交号>，推上去后用户就会拿到新版本；不打版本号也能正常显示，
+        只是用户在托管商的缓存期内（GitHub Pages 约 10 分钟）可能看到旧页面。
+     3. **直接双击本文件（file://）**：没有服务器也没有版本号，但浏览器
+        对本地文件的缓存很松，普通刷新即可。 -->
+<script src="js/summarize.js"></script>
+<script src="js/config.js"></script>
+<script src="js/rss.js"></script>
+<script src="js/stats.js"></script>
+<script src="js/fallbackImage.js"></script>
+<script src="js/aiImage.js"></script>
+<script src="js/app.js"></script>
 </body>
 </html>

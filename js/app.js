@@ -44,7 +44,12 @@ function safeUrl(url) {
   if (!raw) return "";
   try {
     const u = new URL(raw, location.href);
-    return (u.protocol === "http:" || u.protocol === "https:") ? u.href : "";
+    if (u.protocol === "http:" || u.protocol === "https:") return u.href;
+    // data: 只放行**图片**（前端现画的兜底图就是 data:image/svg+xml，
+    // 静态托管没有后端时全靠它），其它协议（javascript: 等）一律拒绝，防注入。
+    if (u.protocol === "data:" &&
+        /^data:image\/(png|jpe?g|gif|webp|svg\+xml)[;,]/i.test(raw)) return raw;
+    return "";
   } catch (e) {
     return "";         // 地址本身不合法，当作没有
   }
@@ -678,7 +683,7 @@ function renderImmersiveCard() {
       ${cover
         ? `<img class="imm-cover" src="${escapeHtml(cover)}" alt="新闻封面"
              onload="this.classList.add('loaded')"
-             onerror="this.remove()">`   // 图片打不开就撤掉，只留渐变底
+             onerror="coverImageError(this)">`   // 打不开就换成现画的兜底图（不留空位、不留破图）
         : ""}
       ${creditText
         ? `<span class="img-credit" title="${escapeHtml(creditText)}">${escapeHtml(creditText)}</span>`

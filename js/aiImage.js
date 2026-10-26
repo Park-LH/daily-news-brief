@@ -41,6 +41,10 @@ const AI_IMAGE = {
   // 实测 9 秒超时会让大半请求在服务端"还在下载"时就被前端放弃——
   // 结果图其实已经下好了，页面却停在保底图上。
   stockTimeoutMs: 25000,
+  // 后端是否可用。**静态托管（GitHub Pages 等）没有后端**，/api/* 全部 404。
+  // 一旦确认不可用，本批剩下的新闻就不再发这些请求——既避免满屏 404，
+  // 也让纯前端兜底图（js/fallbackImage.js）立刻顶上，页面不会空着等。
+  backendOk: true,
   cachePrefix: "aiimg3:",                     // localStorage 缓存前缀
   // ↑ v2：2026-10-24 取原图逻辑重写前的缓存里存着"页面公共区"的图
   //   （一部电影的海报被当成多篇文章的原图），升前缀让旧缓存全部作废重取。
@@ -408,6 +412,8 @@ async function requestStockImage(news) {
 async function requestCodeImage(news) {
   // 直接双击 index.html（file://）时没有后端，跳过
   if (location.protocol === "file:") return "";
+  // 已经确认没有后端（静态托管）就别再一条条发 404 请求了
+  if (AI_IMAGE.backendOk === false) return "";
 
   try {
     const resp = await fetch(AI_IMAGE.codeEndpoint, {
@@ -420,10 +426,14 @@ async function requestCodeImage(news) {
         title: news.title || "",
       }),
     });
+    // 静态托管下 /api/* 返回的是 404 页面（有时还是 HTML），
+    // 这时要把"没有后端"这件事记下来，后面 15 条新闻就不用再试了。
+    if (!resp.ok) { AI_IMAGE.backendOk = false; return ""; }
     const data = await resp.json();
     return data && data.ok && data.url ? data.url : "";
   } catch (e) {
-    console.warn("[代码配图] 生成失败：", e.message || e);
+    // 返回不是 JSON（404 页面 / 服务器没起）也说明没有可用后端
+    AI_IMAGE.backendOk = false;
     return "";
   }
 }
@@ -466,7 +476,16 @@ async function ensureNewsImage(news) {
   const codeUrl = await requestCodeImage(news);
   if (codeUrl) applyNewsImage(news, codeUrl, "code");
 
-  upgradeNewsImage(news);          // 异步升级，不阻塞
+  // 阶段一必须先落到"有图"：代码生成拿不到时（**没有后端**、后端出错、
+  // file:// 直开），用纯前端现画的兜底图顶上（见 js/fallbackImage.js）。
+  // 少了这一步，静态托管下每条新闻都会一直空着——线上等于没有配图。
+  if (!news.image) {
+    const fb = (typeof clientFallbackImage === "function") ? clientFallbackImage(news) : "";
+    if (fb) applyNewsImage(news, fb, "fallback");
+  }
+
+  // 没有后端时升级也没意义（全是 404），直接跳过
+  if (AI_IMAGE.backendOk !== false) upgradeNewsImage(news);
   return news.image || "";
 }
 
@@ -500,7 +519,14 @@ async function upgradeNewsImage(news) {
       applyNewsImage(news, hit.file, "library");
       return;
     }
-    console.warn("[配图] 三级都失败且无图库可用：", news.title);
+  }
+
+  // 最后一道闸：图库也没有（静态托管下图库索引里的 svg 还常常是不存在的），
+  // 就现画一张，绝不留空位。
+  if (!news.image) {
+    const fb = (typeof clientFallbackImage === "function") ? clientFallbackImage(news) : "";
+    if (fb) { applyNewsImage(news, fb, "fallback"); return; }
+    console.warn("[配图] 所有来源都不可用（连兜底图都没画出来）：", news.title);
   }
 }
 
@@ -518,7 +544,10 @@ function applyNewsImage(news, url, from, credit) {
   news.image = safe;
   news.imageFrom = from;
   news.imageCredit = credit || "";
-  writeImageCache(news, safe);
+  // ⚠️ 只把"真图"（原图 / 意象图）写进缓存。
+  // 以前代码生成图、图库图也一并缓存，后果很隐蔽：这次后端慢、先落了保底图，
+  // 缓存里就永远是这张保底图——以后打开这条新闻**再也不会升级成真图**了。
+  if (from === "origin" || from === "stock") writeImageCache(news, safe);
 
   const creditText = formatImageCredit(credit);
   const creditHtml = creditText
@@ -540,6 +569,7 @@ function applyNewsImage(news, url, from, credit) {
       if (im) {
         const show = () => im.classList.add("loaded");
         if (im.complete) show(); else im.onload = show;
+        im.addEventListener("error", () => coverImageError(im, news));
       }
     } else if (box.classList.contains("news-thumb-empty")) {
       const wrap = document.createElement("div");
@@ -552,6 +582,7 @@ function applyNewsImage(news, url, from, credit) {
       // 列表缩略图只有 86×86，塞不下一行署名小字（会糊住画面），
       // 所以署名只在大图（沉浸卡片）上显示，列表里用 title 提示。
       if (creditText) img.title = creditText;
+      img.addEventListener("error", () => coverImageError(img, news));
       wrap.appendChild(img);
       box.replaceWith(wrap);
     }
