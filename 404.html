@@ -1,0 +1,60 @@
+<!--
+  自定义 404 页面（GitHub Pages 会自动使用它）
+
+  为什么要有它：Pages 默认返回的是一段纯英文的 GitHub 404，
+  访客（尤其是手机用户）看到会以为网站坏了。
+  有了这个文件，访问不存在的路径时会显示下面的中文提示，并且能一键回首页。
+
+  注意：相对路径要按"站点可能部署在子路径下"来写（如 /daily-news-brief/），
+  所以这里用相对路径 index.html，不要写成 /index.html。
+-->
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>页面不存在 · 每日新闻简报</title>
+  <style>
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      min-height: 100vh;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-family: -apple-system, "Microsoft YaHei", "PingFang SC", sans-serif;
+      background: linear-gradient(135deg, #a5b4fc 0%, #fbcfe8 100%);
+      color: #1f2937;
+    }
+    .box {
+      max-width: 520px;
+      padding: 40px 32px;
+      text-align: center;
+      background: rgba(255, 255, 255, 0.72);
+      backdrop-filter: blur(10px);
+      -webkit-backdrop-filter: blur(10px);
+      border-radius: 18px;
+      box-shadow: 0 10px 40px rgba(31, 41, 55, 0.14);
+    }
+    h1 { margin: 0 0 12px; font-size: 26px; }
+    p { margin: 0 0 22px; line-height: 1.7; color: #4b5563; }
+    a {
+      display: inline-block;
+      padding: 10px 22px;
+      border-radius: 999px;
+      background: #3b82f6;
+      color: #fff;
+      text-decoration: none;
+      font-size: 15px;
+    }
+    a:hover { background: #2563eb; }
+  </style>
+</head>
+<body>
+  <div class="box">
+    <h1>页面不存在（404）</h1>
+    <p>你访问的地址没有内容，可能是链接过期或输入有误。<br>回到首页查看今天的简报吧。</p>
+    <a href="index.html">回到首页</a>
+  </div>
+</body>
+</html>

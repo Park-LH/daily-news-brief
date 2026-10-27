@@ -26,6 +26,7 @@
 const FEED_PROXY_PATH = "/api/feed";
 const FEED_PROXY_TIMEOUT_MS = 10000;   // 必须 > 服务端抓取超时（8 秒）
 const RSS2JSON_TIMEOUT_MS = 15000;
+const ALLORIGINS_TIMEOUT_MS = 20000;
 
 /**
  * 从一个 RSS 地址抓取新闻列表（三级降级入口）
@@ -70,11 +71,30 @@ async function fetchRss(feedUrl) {
     }
   }
 
-  // ---- 通道 2：rss2json（失败会抛中文错误，由调用方显示提示）----
-  const items = await fetchViaRss2Json(feedUrl);
-  logFetchResult(feedUrl, hasServer ? "rss2json（代理已降级）" : "rss2json（file:// 直连）",
-                 items.length, started);
-  return items;
+  // ---- 通道 2：rss2json（失败会降级到通道 3，不再直接抛错）----
+  // 2026-10-27 加了通道 3：静态托管（GitHub Pages）上没有本地代理，
+  // rss2json 是唯一新闻来源；它一旦不可达，线上就会"整站没有新闻"。
+  // 多一条公共代理通道，站点在访客网络下的存活率高得多。
+  try {
+    const items = await fetchViaRss2Json(feedUrl);
+    logFetchResult(feedUrl, hasServer ? "rss2json（代理已降级）" : "rss2json（file:// 直连）",
+                   items.length, started);
+    return items;
+  } catch (e2) {
+    console.warn(`[RSS] rss2json 不可用，降级到 allorigins 公共代理：${e2.message}`);
+  }
+
+  // ---- 通道 3：allorigins 公共代理（直接返回源站原始 XML，本地解析）----
+  try {
+    const items = await fetchViaAllOrigins(feedUrl);
+    logFetchResult(feedUrl, "allorigins（公共代理）", items.length, started);
+    return items;
+  } catch (e3) {
+    console.warn(`[RSS] allorigins 也不可用：${e3.message}`);
+  }
+
+  // 三条通道都失败：抛中文错误，由调用方显示"以下源暂时无法访问"
+  throw new Error("所有新闻通道都不可用（本地代理 / rss2json / allorigins）");
 }
 
 /**
@@ -122,6 +142,66 @@ async function fetchViaProxy(feedUrl) {
     content: stripHtml(item.description || "").slice(0, 3000),
     contentFromSummary: true,
   }));
+}
+
+/**
+ * 通道 3：走 allorigins 公共代理（rss2json 也不可用时的最后退路）
+ * 与前两条通道不同，它返回的是**源站原始 XML**，需要我们自己解析。
+ */
+async function fetchViaAllOrigins(feedUrl) {
+  const api = "https://api.allorigins.win/raw?url=" + encodeURIComponent(feedUrl);
+
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), ALLORIGINS_TIMEOUT_MS);
+  let resp;
+  try {
+    resp = await fetch(api, { signal: controller.signal });
+  } catch (e) {
+    if (e.name === "AbortError") {
+      throw new Error(`请求超时（${ALLORIGINS_TIMEOUT_MS} 毫秒无响应）`);
+    }
+    throw new Error("网络连接失败，请检查是否联网");
+  } finally {
+    clearTimeout(timer);
+  }
+  if (!resp.ok) {
+    throw new Error(`接口返回 HTTP ${resp.status}`);
+  }
+  return parseRssXml(await resp.text());
+}
+
+/**
+ * 解析 RSS 原始 XML（通道 3 专用）
+ * 用浏览器自带的 DOMParser，比手写正则可靠。
+ * 输出字段与本地代理保持一致（title/link/summary/pubDate/content），
+ * 这样后面的"时间过滤 / 去重 / 分板块"完全不用关心新闻是哪条通道来的。
+ */
+function parseRssXml(xmlText) {
+  const doc = new DOMParser().parseFromString(xmlText, "text/xml");
+  // DOMParser 解析失败不会抛异常，而是在文档里放一个 <parsererror> 节点
+  if (doc.querySelector("parsererror")) {
+    throw new Error("返回的不是有效的 RSS 数据");
+  }
+  const nodes = Array.from(doc.querySelectorAll("item"));
+  const items = nodes.map(node => {
+    const textOf = tag => {
+      const el = node.querySelector(tag);
+      return el ? el.textContent : "";
+    };
+    const desc = stripHtml(textOf("description"));
+    return {
+      title: stripHtml(textOf("title")),
+      link: (textOf("link") || "").trim(),
+      summary: desc,
+      // RSS 标准的 pubDate 是 RFC822 格式（"Mon, 26 Oct 2026 ..."），
+      // new Date() 能直接解析，与"只保留今天"的时间过滤兼容
+      pubDate: textOf("pubDate") || textOf("date"),
+      image: "",
+      content: desc.slice(0, 3000),
+    };
+  });
+  // 标题或链接缺失的条目没有展示价值，直接丢掉
+  return items.filter(it => it.title && it.link);
 }
 
 /**
