@@ -237,43 +237,102 @@ function fbMotifOrbit(rng, accent, box) {
   return s;
 }
 
-/** 节点网络（通用科技） */
+/**
+ * 节点网络（通用科技）
+ * 2026-10-27 加密：原来是 6 个**纯随机**点、连线还要掷骰子跳过 45%，
+ * 实际只画出 3~4 个点和零星几条线，看着像"几个散落的点"。
+ * 现在改成：3×4 抖动网格布点（12 个，分布均匀不结块）
+ * + 每个点连到最近的 2 个邻居（保证一定成网）
+ * + 近距离的点再按概率补边 → 密度明显提高。
+ */
 function fbMotifNodes(rng, accent, box) {
   const { x0, y0, w, h } = box;
+  const cols = 3, rows = 4;
   const pts = [];
-  const n = 6;
-  for (let i = 0; i < n; i++) {
-    pts.push([x0 + w * (0.1 + rng() * 0.8), y0 + h * (0.1 + rng() * 0.8)]);
-  }
-  let s = "";
-  for (let i = 0; i < n; i++) {
-    for (let j = i + 1; j < n; j++) {
-      if (rng() > 0.55) continue;
-      s += `<path d="M${pts[i][0].toFixed(0)} ${pts[i][1].toFixed(0)} `
-        + `L${pts[j][0].toFixed(0)} ${pts[j][1].toFixed(0)}" stroke="${accent}" `
-        + `stroke-width="3" opacity="${(0.2 + rng() * 0.25).toFixed(2)}"/>`;
+  for (let r = 0; r < rows; r++) {
+    for (let c = 0; c < cols; c++) {
+      const jx = (rng() - 0.5) * (w / cols) * 0.45;
+      const jy = (rng() - 0.5) * (h / rows) * 0.45;
+      pts.push([x0 + (w / cols) * (c + 0.5) + jx, y0 + (h / rows) * (r + 0.5) + jy]);
     }
   }
+  const n = pts.length;
+  const dist2 = (i, j) => (pts[i][0] - pts[j][0]) * (pts[i][0] - pts[j][0])
+                        + (pts[i][1] - pts[j][1]) * (pts[i][1] - pts[j][1]);
+  const ekey = (i, j) => (i < j ? (i + "-" + j) : (j + "-" + i));
+  const edges = new Set();
+  // 每个点连到最近的 2 个邻居 → 不会出现孤立点
   for (let i = 0; i < n; i++) {
-    const r = Math.min(w, h) * (0.045 + rng() * 0.035);
+    const near = [];
+    for (let j = 0; j < n; j++) { if (j !== i) near.push([j, dist2(i, j)]); }
+    near.sort((a, b) => a[1] - b[1]);
+    for (let k = 0; k < 2 && k < near.length; k++) edges.add(ekey(i, near[k][0]));
+  }
+  // 近距离再补一些边，把网织密
+  const nearLimit = (w * 0.32) * (w * 0.32);
+  for (let i = 0; i < n; i++) {
+    for (let j = i + 1; j < n; j++) {
+      if (dist2(i, j) < nearLimit && rng() < 0.45) edges.add(ekey(i, j));
+    }
+  }
+  let s = "";
+  edges.forEach(k => {
+    const pair = k.split("-");
+    const i = Number(pair[0]), j = Number(pair[1]);
+    s += `<path d="M${pts[i][0].toFixed(0)} ${pts[i][1].toFixed(0)} `
+      + `L${pts[j][0].toFixed(0)} ${pts[j][1].toFixed(0)}" stroke="${accent}" `
+      + `stroke-width="3" opacity="${(0.28 + rng() * 0.3).toFixed(2)}"/>`;
+  });
+  for (let i = 0; i < n; i++) {
+    const r = Math.min(w, h) * (0.032 + rng() * 0.02);
     s += `<circle cx="${pts[i][0].toFixed(0)}" cy="${pts[i][1].toFixed(0)}" r="${r.toFixed(0)}" `
-      + `fill="${accent}" opacity="${(0.4 + rng() * 0.5).toFixed(2)}"/>`;
+      + `fill="${accent}" opacity="${(0.45 + rng() * 0.45).toFixed(2)}"/>`;
   }
   return s;
 }
 
-/** 城市天际线（政治 / 城市） */
+/**
+ * 城市天际线（政治 / 城市）
+ * 2026-10-27 改形：原来只是"几个高矮不同的空心矩形"，和财经的柱状图
+ * **视觉上几乎分不出来**（用户二审指出）。现在给每栋楼加上
+ * ① 屋顶线（比楼体略宽的屋檐横线）② 两列窗户 ③ 一条地面线，
+ * 一眼就能看出是"楼房"而不是"柱子"。
+ */
 function fbMotifCity(rng, accent, box) {
   const { x0, y0, w, h } = box;
-  const n = 6, gap = w * 0.03, bw = (w - gap * (n - 1)) / n;
+  const n = 5;
+  const gap = w * 0.035;
+  const bw = (w - gap * (n - 1)) / n;
   let s = "";
   for (let i = 0; i < n; i++) {
-    const bh = h * (0.32 + rng() * 0.62);
+    const bh = h * (0.34 + rng() * 0.6);
     const bx = x0 + i * (bw + gap);
-    s += `<rect x="${bx.toFixed(0)}" y="${(y0 + h - bh).toFixed(0)}" width="${bw.toFixed(0)}" `
-      + `height="${bh.toFixed(0)}" rx="${(bw * 0.08).toFixed(0)}" fill="none" `
-      + `stroke="${accent}" stroke-width="5" opacity="${(0.5 + rng() * 0.4).toFixed(2)}"/>`;
+    const by = y0 + h - bh;
+    // 楼体
+    s += `<rect x="${bx.toFixed(0)}" y="${by.toFixed(0)}" width="${bw.toFixed(0)}" `
+      + `height="${bh.toFixed(0)}" rx="${(bw * 0.05).toFixed(0)}" fill="none" `
+      + `stroke="${accent}" stroke-width="5" opacity="${(0.55 + rng() * 0.35).toFixed(2)}"/>`;
+    // 屋顶线（屋檐）：比楼体略宽的一条横线
+    const eave = bw * 0.16;
+    s += `<path d="M${(bx - eave).toFixed(0)} ${by.toFixed(0)} `
+      + `H${(bx + bw + eave).toFixed(0)}" stroke="${accent}" stroke-width="5" `
+      + `opacity="0.8" stroke-linecap="round"/>`;
+    // 窗户：两列 × 若干行的小方块
+    const rows = Math.max(2, Math.floor(bh / (bw * 0.6)));
+    const wSize = bw * 0.2;
+    for (let r = 0; r < rows; r++) {
+      for (let c = 0; c < 2; c++) {
+        const wx = bx + bw * (0.24 + c * 0.42);
+        const wy = by + bh * 0.14 + r * (bh * 0.72 / rows);
+        s += `<rect x="${wx.toFixed(0)}" y="${wy.toFixed(0)}" width="${wSize.toFixed(0)}" `
+          + `height="${(wSize * 0.8).toFixed(0)}" fill="${accent}" `
+          + `opacity="${(0.3 + rng() * 0.35).toFixed(2)}"/>`;
+      }
+    }
   }
+  // 地面线：让楼"立"在地上
+  s += `<path d="M${x0.toFixed(0)} ${(y0 + h).toFixed(0)} H${(x0 + w).toFixed(0)}" `
+    + `stroke="${accent}" stroke-width="5" opacity="0.7" stroke-linecap="round"/>`;
   return s;
 }
 
