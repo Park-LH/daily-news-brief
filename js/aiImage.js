@@ -127,7 +127,11 @@ const STOCK_TOPIC_OBJECTS = [
     en: ["hard disk drive", "computer server rack", "solid state drive"] },
   { cn: ["芯片", "半导体", "晶圆", "集成电路", "CPU", "处理器", "光刻"],
     en: ["computer chip", "silicon wafer", "motherboard"] },
-  { cn: ["人工智能", "AI", "大模型", "算法", "算力", "深度学习", "机器学习", "神经网络", "模型"],
+  // 2026-10-28 补 "操作系统/软件"：实测一条《操作系统产业联盟成立》的科技新闻
+  // 因为词表里没有这两个词，拿不到"电脑"实物图，只能退回板块泛词 technology
+  // ——而用户明确要求"讲软件/AI 的新闻必须出现电脑（屏幕上是有对应内容的界面）"。
+  { cn: ["人工智能", "AI", "大模型", "算法", "算力", "深度学习", "机器学习", "神经网络", "模型",
+         "操作系统", "软件", "国产系统", "鸿蒙", "编程"],
     en: ["laptop computer screen", "computer workstation", "computer monitor"] },
   { cn: ["机器人", "机械臂", "智能制造", "无人"],
     en: ["industrial robot", "robot arm"] },
@@ -194,19 +198,14 @@ function buildStockQueries(news) {
   if (topic) out.push(topic);
 
   // ① 标题里命中的地名 / 机构 / 实物（中文短词）
+  // ⚠️ 2026-10-28：这里原来有两段**一字不差**的重复代码（⓪①②里的 ① 和 ②），
+  // 第二段是因为早先改顺序时留下的，删掉；同时给实体词也加上去重判断，
+  // 免得同一个词占掉后面候选的名额（末尾最多只留 3 个候选）。
   for (const e of STOCK_ENTITY_HINTS) {
-    if (title.indexOf(e) >= 0) out.push(e);
+    if (title.indexOf(e) >= 0 && out.indexOf(e) < 0) out.push(e);
   }
   // 科技词表里**拍得出照片**的那些具体事物
   // （"AI""算法""算力""5G"这类抽象词在 Commons 里搜出来是图标/示意图，不能用）
-  for (const k of STOCK_PHOTO_WORDS) {
-    if (title.indexOf(k) >= 0 && out.indexOf(k) < 0) out.push(k);
-  }
-
-  // ② 标题里的地名 / 机构 / 实物（中文短词，Commons 认得出）
-  for (const e of STOCK_ENTITY_HINTS) {
-    if (title.indexOf(e) >= 0) out.push(e);
-  }
   for (const k of STOCK_PHOTO_WORDS) {
     if (title.indexOf(k) >= 0 && out.indexOf(k) < 0) out.push(k);
   }

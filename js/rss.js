@@ -182,20 +182,55 @@ function parseRssXml(xmlText) {
   if (doc.querySelector("parsererror")) {
     throw new Error("返回的不是有效的 RSS 数据");
   }
-  const nodes = Array.from(doc.querySelectorAll("item"));
+  // ⚠️ 2026-10-28 补：只判断"XML 是否合法"是不够的。
+  // 一个 HTML 页面（代理返回 404、网关错误页…）同样可能是**格式良好**的 XML，
+  // 于是 parsererror 不出现、querySelectorAll("item") 查到 0 条，
+  // 函数就"成功"返回空数组——上层把它当成"抓到了 0 条新闻"，
+  // 页面显示"暂无新闻"，真实的"接口挂了"被彻底掩盖，也不会再试其它通道。
+  // 所以这里再确认一次：根节点必须是 RSS/Atom，或者文档里确实有条目。
+  const root = doc.documentElement ? doc.documentElement.nodeName.toLowerCase() : "";
+  const looksLikeFeed = root === "rss" || root === "feed" || root === "rdf:rdf" ||
+                        doc.getElementsByTagName("channel").length > 0 ||
+                        doc.getElementsByTagName("item").length > 0 ||
+                        doc.getElementsByTagName("entry").length > 0;
+  if (!looksLikeFeed) {
+    throw new Error("返回的不是 RSS 内容（可能是错误页面）");
+  }
+  // RSS 2.0 用 <item>，Atom 用 <entry>——两种都要认，
+  // 否则 Atom 源会"解析成功、0 条新闻"，页面上莫名少一个源。
+  let nodes = Array.from(doc.querySelectorAll("item"));
+  let isAtom = false;
+  if (nodes.length === 0) {
+    nodes = Array.from(doc.querySelectorAll("entry"));
+    isAtom = nodes.length > 0;
+  }
   const items = nodes.map(node => {
     const textOf = tag => {
       const el = node.querySelector(tag);
       return el ? el.textContent : "";
     };
-    const desc = stripHtml(textOf("description"));
+    const desc = stripHtml(textOf("description") || textOf("summary") || textOf("content"));
+    // Atom 的链接写在 <link href="..."> 属性里，RSS 写在 <link> 标签体里
+    let link = "";
+    if (isAtom) {
+      const lk = node.querySelector("link[href]");
+      if (lk) link = lk.getAttribute("href") || "";
+      if (!link) {
+        // 备选：rel="alternate" 的那个 <link>
+        const alt = Array.from(node.querySelectorAll("link"))
+          .find(x => (x.getAttribute("rel") || "") === "alternate" && x.getAttribute("href"));
+        if (alt) link = alt.getAttribute("href") || "";
+      }
+    } else {
+      link = (textOf("link") || "").trim();
+    }
     return {
       title: stripHtml(textOf("title")),
-      link: (textOf("link") || "").trim(),
+      link: String(link || "").trim(),
       summary: desc,
       // RSS 标准的 pubDate 是 RFC822 格式（"Mon, 26 Oct 2026 ..."），
-      // new Date() 能直接解析，与"只保留今天"的时间过滤兼容
-      pubDate: textOf("pubDate") || textOf("date"),
+      // Atom 是 ISO（"2026-10-28T08:00:00Z"）——new Date() 两种都能解析
+      pubDate: textOf("pubDate") || textOf("published") || textOf("updated") || textOf("date"),
       image: "",
       content: desc.slice(0, 3000),
     };

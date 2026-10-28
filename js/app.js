@@ -144,10 +144,15 @@ function renderCategory(category, newsList) {
   `;
   }).join("");
 
-  // 源图打不开（链接失效、防盗链等）时：
-  // 换成一块干净的空位（不再放 🖼️ 占位图标），再交给 AI 生成补一张
+  // 源图打不开（链接失效、防盗链、图库索引指向已被 .gitignore 的 svg…）时：
+  // 先换成**现画的兜底图**；兜底图也画不出来才退成空位交给后续流程补。
+  // 2026-10-28 修：以前这里直接把 <img> 换成空位，于是静态托管下图库 svg 不存在时
+  // 列表里留下一排空位——而"配图不可空缺"是硬要求。现在与沉浸卡片一致，都换兜底图。
   list.querySelectorAll("img.news-thumb").forEach(el => {
     el.addEventListener("error", () => {
+      if (typeof coverImageError === "function") coverImageError(el);
+      // coverImageError 成功时会打上 fbApplied 标记并把 src 换成兜底图
+      if (el.dataset.fbApplied) return;
       const box = document.createElement("div");
       box.className = "news-thumb news-thumb-empty";
       if (el.dataset.newsId) box.dataset.newsId = el.dataset.newsId;
@@ -311,7 +316,8 @@ async function requestArticleCover(news) {
   el.className = "imm-cover";
   el.alt = "新闻封面";
   el.onload = () => el.classList.add("loaded");  // 加载完才淡入（见 style.css）
-  el.onerror = () => el.remove();                // 打不开就撤掉，留渐变底
+  // 打不开就换成现画的兜底图（与列表/沉浸卡片一致），不要直接撤掉留白
+  el.onerror = () => { if (typeof coverImageError === "function") coverImageError(el, news); };
   el.src = img;
   media.appendChild(el);
 }
@@ -485,7 +491,23 @@ function isSimilarTitle(normA, normB) {
     let inter = 0;
     setA.forEach(g => { if (setB.has(g)) inter++; });
     const union = setA.size + setB.size - inter;
-    similar = union > 0 && inter / union >= 0.85;
+    const jaccard = union > 0 ? inter / union : 0;
+    similar = jaccard >= 0.85;
+
+    // ②-b 重叠系数 inter/min：专门补"其中一条只是插入/删了几个字"的情况。
+    // 实测反例：「操作系统产业联盟在京正式成立」vs「操作系统产业联盟在京成立」
+    // ——明明是同一条稿子，Jaccard 只有 0.71（长度差把分母撑大了），判不重，
+    // 页面上就出现了两条同样的新闻。重叠系数 10/11 = 0.91，能正确判重。
+    // 两个护栏，防止"短标题被长标题吃掉"造成误删：
+    //   ① 较短那条至少 6 个字（太短不足以判定同一事件）
+    //   ② 长短比 ≤ 1.5（避免一句话和一个长标题被判成同一条）
+    if (!similar) {
+      const minSize = Math.min(setA.size, setB.size);
+      const maxSize = Math.max(setA.size, setB.size);
+      const lenRatio = maxSize / Math.max(minSize, 1);
+      const overlap = minSize > 0 ? inter / minSize : 0;
+      similar = minSize >= 6 && lenRatio <= 1.5 && overlap >= 0.9;
+    }
   }
 
   // ③ 系列报道豁免：相似，但差异点正好落在序列标记上（之一/之二、第1篇/第2篇…）

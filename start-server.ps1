@@ -212,7 +212,12 @@ $lanIP = Get-LanIP
 # 原理：先试着把 8019 端口"占"一下，如果已被别人占用会抛异常
 $probe = New-Object System.Net.HttpListener
 try {
+  # 两个前缀都试：http.sys 是**按主机名精确匹配**的，只注册 localhost 的话，
+  # 用户（或脚本）用 http://127.0.0.1:8019/ 访问会被 http.sys 直接拒绝，
+  # 返回 "Bad Request - Invalid Hostname"（400），看着像服务器坏了。
+  # 2026-10-28 实测发现：本机只注册 localhost 时，127.0.0.1 全部请求 400。
   $probe.Prefixes.Add("http://localhost:$port/")
+  try { $probe.Prefixes.Add("http://127.0.0.1:$port/") } catch { }
   $probe.Start()
   $probe.Stop()
   $probe.Close()
@@ -275,7 +280,12 @@ try {
 } catch { }
 
 $listener = New-Object System.Net.HttpListener
-if ($lanMode) { $listener.Prefixes.Add("http://+:$port/") } else { $listener.Prefixes.Add("http://localhost:$port/") }
+if ($lanMode) { $listener.Prefixes.Add("http://+:$port/") } else {
+  # 同时监听 localhost 与 127.0.0.1：两者在 http.sys 里是**不同的主机名**，
+  # 只注册一个，另一个访问就会 400（详见启动前 2 的注释）
+  $listener.Prefixes.Add("http://localhost:$port/")
+  try { $listener.Prefixes.Add("http://127.0.0.1:$port/") } catch { }
+}
 try {
   $listener.Start()
 } catch {
@@ -283,6 +293,7 @@ try {
   Write-Host "  ⚠️ 绑定局域网地址失败，已退回本地模式：$_" -ForegroundColor Yellow
   $listener = New-Object System.Net.HttpListener
   $listener.Prefixes.Add("http://localhost:$port/")
+  try { $listener.Prefixes.Add("http://127.0.0.1:$port/") } catch { }
   $listener.Start()
   $lanMode = $false
 }
