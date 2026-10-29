@@ -435,12 +435,76 @@ function Read-ErrTail($file, $maxLines = 3) {
   return (($lines | Select-Object -Last $maxLines) -join " ").Trim()
 }
 
+# ---------- 静态文件"快车道"（后台并发处理） ----------
+# 2026-10-29 修复"图像显示不正常"：下面的主循环是**单线程串行**的，
+# 抓原图 / 搜意象图 / 调 python 生成图这些**动辄几十秒的外网任务**一旦在处理中，
+# 后面排队的所有请求都得等——包括本地毫秒级就能读完的图片文件。
+# 实测：页面一次发来 19 个配图请求时，图片能卡到几分钟不出来，
+# 用户看到的就是"图一直空白/不显示"。
+# 现在：静态文件请求（图片 / js / css / html）不再进主循环排队，
+# 而是交给这个 6 并发的后台线程池立刻读写返回；耗时 API 依旧走主循环，互不影响。
+# 安全性与原逻辑完全一致：路径穿越防护、MIME、缓存头、HTML 版本号注入都保留。
+$staticPool = [runspacefactory]::CreateRunspacePool(1, 6)
+$staticPool.Open()
+$staticScript = {
+  param($ctx2, $rootDir, $mimeMap, $verStamp)
+  $resp = $ctx2.Response
+  try {
+    $p = [Uri]::UnescapeDataString($ctx2.Request.Url.AbsolutePath)
+    if ($p -eq "/") { $p = "/index.html" }
+    # 拼出本地文件路径，并检查它确实在项目文件夹里（与原逻辑相同的防穿越）
+    $file = [IO.Path]::GetFullPath((Join-Path $rootDir ($p -replace "/", "\")))
+    if (-not $file.StartsWith($rootDir)) { $resp.StatusCode = 403; return }
+    if (-not (Test-Path -LiteralPath $file -PathType Leaf)) { $resp.StatusCode = 404; return }
+
+    $ext = [IO.Path]::GetExtension($file).ToLower()
+    if ($ext -eq ".html") {
+      # HTML：注入版本号 ?v=（与原来一致：只改内存里的内容，不写回磁盘）
+      $htmlText = [IO.File]::ReadAllText($file, [Text.Encoding]::UTF8)
+      $htmlText = $htmlText -replace '(\.(?:css|js))\?v=[^"'' ]*', '$1'
+      $verRepl = '$1="$2?v=' + $verStamp + '"'
+      $htmlText = $htmlText -replace '(href|src)="([^"]+\.(?:css|js))"', $verRepl
+      $bytes = [Text.Encoding]::UTF8.GetBytes($htmlText)
+    } else {
+      $bytes = [IO.File]::ReadAllBytes($file)
+    }
+    $resp.ContentType = if ($mimeMap.ContainsKey($ext)) { $mimeMap[$ext] } else { "application/octet-stream" }
+    if ($ext -eq ".html" -or $ext -eq ".js" -or $ext -eq ".css") {
+      $resp.Headers.Add("Cache-Control", "no-cache, no-store, must-revalidate")
+      $resp.Headers.Add("Pragma", "no-cache")
+      $resp.Headers.Add("Expires", "0")
+    }
+    $resp.ContentLength64 = $bytes.Length
+    if ($ctx2.Request.HttpMethod -ne "HEAD") {
+      $resp.OutputStream.Write($bytes, 0, $bytes.Length)
+    }
+  } catch {
+    try { $resp.StatusCode = 500 } catch { }
+  } finally {
+    # 响应必须在这里关闭：主循环对这个请求是"转手就忘"（continue 跳过了统一 Close）
+    try { $resp.Close() } catch { }
+  }
+}
+
 # ---------- 主循环：等待并处理请求 ----------
 
 while ($listener.IsListening) {
   $ctx = $listener.GetContext()
   try {
     $path = [Uri]::UnescapeDataString($ctx.Request.Url.AbsolutePath)
+
+    # ===== 快车道：静态文件转后台并发（见上方 $staticScript 的说明）=====
+    # GET/HEAD 且不是 /api/* 的一律转手；响应由后台脚本负责关闭，
+    # 所以这里 continue 跳过循环末尾的统一 Close 是安全的。
+    if ($ctx.Request.HttpMethod -eq "GET" -or $ctx.Request.HttpMethod -eq "HEAD") {
+      if ($path -notlike "/api/*") {
+        $staticPs = [powershell]::Create()
+        $staticPs.RunspacePool = $staticPool
+        $null = $staticPs.AddScript($staticScript).AddArgument($ctx).AddArgument($root).AddArgument($mime).AddArgument($buildId)
+        $null = $staticPs.BeginInvoke()
+        continue
+      }
+    }
 
     # ===== 接口 1：/api/stats 数据的保存与读取 =====
     if ($path -eq "/api/stats") {

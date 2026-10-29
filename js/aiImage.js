@@ -41,6 +41,9 @@ const AI_IMAGE = {
   // 实测 9 秒超时会让大半请求在服务端"还在下载"时就被前端放弃——
   // 结果图其实已经下好了，页面却停在保底图上。
   stockTimeoutMs: 25000,
+  // 同时进行"取图/生成图"的新闻条数上限。理由见 fillAllImages 里的注释：
+  // 服务端单线程，并发太高会把首屏图片请求饿死（2026-10-29 实测）
+  maxConcurrent: 2,
   // 后端是否可用。**静态托管（GitHub Pages 等）没有后端**，/api/* 全部 404。
   // 一旦确认不可用，本批剩下的新闻就不再发这些请求——既避免满屏 404，
   // 也让纯前端兜底图（js/fallbackImage.js）立刻顶上，页面不会空着等。
@@ -569,6 +572,15 @@ function applyNewsImage(news, url, from, credit) {
         const show = () => im.classList.add("loaded");
         if (im.complete) show(); else im.onload = show;
         im.addEventListener("error", () => coverImageError(im, news));
+        if (typeof armImageWatchdog === "function") armImageWatchdog(im);
+      }
+    } else if (box.tagName === "IMG") {
+      // 列表缩略图已经有一张 <img>（阶段一先落的代码生成图）：直接换 src 升级成真图。
+      // ⚠️ 2026-10-29 修：以前漏了这种情况（注释写着"列表缩略图也换"，实现里却没有），
+      // 升级拿到真图后，列表里**仍然显示** svg 保底图——又一处"改了一半"（同错题本 ⑨-2）。
+      if (box.getAttribute("src") !== safe) {
+        box.src = safe;
+        if (creditText) box.title = creditText;
       }
     } else if (box.classList.contains("news-thumb-empty")) {
       const wrap = document.createElement("div");
@@ -577,11 +589,17 @@ function applyNewsImage(news, url, from, credit) {
       img.src = safe;
       img.alt = "新闻配图";
       img.loading = "lazy";
+      // ⚠️ 必须把 data-news-id 带到新 <img> 上：以后这条新闻升级到更好的图时，
+      // applyNewsImage 就是靠它找到这里的。2026-10-29 修：以前不带，
+      // 换上去的 <img> 从此"失联"——升级拿到真图后，列表里永远停留在第一张图
+      // （实测：缩略图一直是代码生成图，真图只出现在沉浸卡片上）。
+      img.dataset.newsId = box.dataset.newsId || news.id || "";
       if (isAi) img.className = "ai-cleaned";
       // 列表缩略图只有 86×86，塞不下一行署名小字（会糊住画面），
       // 所以署名只在大图（沉浸卡片）上显示，列表里用 title 提示。
       if (creditText) img.title = creditText;
       img.addEventListener("error", () => coverImageError(img, news));
+      if (typeof armImageWatchdog === "function") armImageWatchdog(img);
       wrap.appendChild(img);
       box.replaceWith(wrap);
     }
@@ -622,10 +640,30 @@ function formatImageCredit(credit) {
  */
 function fillAllImages(newsList) {
   if (!AI_IMAGE.enabled || !Array.isArray(newsList)) return;
-  newsList.forEach(news => {
-    if (!news || safeUrl(news.image)) return;   // 已有源站真图的不覆盖
-    ensureNewsImage(news);                       // 异步，不阻塞页面渲染
-  });
+  const todo = newsList.filter(n => n && !safeUrl(n.image));   // 已有源站真图的不覆盖
+
+  // ⚠️ 2026-10-29 并发限流（修"图像显示不正常"）：
+  // 以前这里是 forEach 直接把十几条新闻**同时**发出去。服务端是单线程的，
+  // 请求在 http.sys 里按先进先出排队——页面首屏的图片请求排在十几个
+  // 耗时几秒的抓图/生成图任务**后面**，要等它们全部处理完才能轮到，
+  // 实测几分钟不出图，用户看到的就是"图像一直空白"。
+  // 现在最多同时跑 2 条（worker 池），服务端每处理完一个请求就腾出手
+  // 把排队的图片请求转发给快车道，图片几秒内就能出来。
+  const conc = Math.max(1, AI_IMAGE.maxConcurrent || 2);
+  let next = 0;
+  const worker = async () => {
+    while (next < todo.length) {
+      const news = todo[next++];
+      try {
+        await ensureNewsImage(news);          // 串行等待，控制并发
+      } catch (e) {
+        console.warn("[配图] 单条配图流程出错（不影响其它）：", e && e.message);
+      }
+    }
+  };
+  const workers = [];
+  for (let i = 0; i < Math.min(conc, todo.length); i++) workers.push(worker());
+  return Promise.all(workers);
 }
 
 /** 兼容旧调用名（app.js 里原来叫 fillMissingImages） */

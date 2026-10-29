@@ -419,6 +419,47 @@ function clientFallbackImage(news) {
 }
 
 /**
+ * 图片加载**看门狗**：给 <img> 挂一个"加载超时"保险。
+ *
+ * 背景（2026-10-29 实测）：本地服务端是单线程的，被耗时的抓图 / 生成图任务占住时，
+ * 图片请求会排队卡住几分钟——浏览器里这张图一直是 pending（complete=false），
+ * 不触发 error、也不触发 load，页面看起来就是"图像一直空白"。
+ * onerror 兜底图对这种情况**无效**（压根没走到"失败"那一步），所以需要看门狗：
+ *   ① 15 秒还没加载完 → 强制重新请求一次（顺便把 lazy 改成立即加载）；
+ *   ② 重试后再等两轮（共约 45 秒）仍未完成 → 调 coverImageError 换成现画的兜底图，
+ *      绝不留永久空白。给两轮宽限是因为重试的请求可能排在服务端正在处理的
+ *      耗时任务后面，45 秒内真图大概率能到——宁可多等，不轻易用兜底图顶替真图。
+ * 正常毫秒级加载完成的图完全不受影响（load/error 一到定时器就被清掉）。
+ * 同一张图只挂一次（dataset.watchdog 防重）。
+ */
+function armImageWatchdog(img, timeoutMs) {
+  if (!img || img.dataset.watchdog) return;
+  img.dataset.watchdog = "1";
+  const wait = timeoutMs || 15000;
+  let ticks = 0;
+  const timer = setInterval(() => {
+    // 加载完成（或已换成兜底图）就收摊
+    if ((img.complete && img.naturalWidth > 0) || img.dataset.fbApplied) {
+      clearInterval(timer);
+      return;
+    }
+    ticks += 1;
+    if (ticks === 1) {
+      // 第一阶段：强制重试一次。lazy 的图在视口外不会发起请求，
+      // 这里改成 eager 主动要一次；对"请求发出但服务端忙"的图相当于重排到队尾
+      img.loading = "eager";
+      img.src = img.src;
+    } else if (ticks >= 3) {
+      // 第二阶段：重试后仍不出图就认输，换兜底图
+      clearInterval(timer);
+      if (typeof coverImageError === "function") coverImageError(img);
+    }
+  }, wait);
+  img.addEventListener("load", () => clearInterval(timer), { once: true });
+  img.addEventListener("error", () => clearInterval(timer), { once: true });
+}
+
+/**
  * 图片加载失败时的兜底（供 <img onerror> 与 applyNewsImage 用）
  * 作用：任何一张图挂了（图库里指向已被 .gitignore 的 svg、缓存里的旧地址、
  * 文件被清掉……），都不会留下破图或空白，而是换成现画的一张。

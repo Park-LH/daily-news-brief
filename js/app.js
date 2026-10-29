@@ -149,6 +149,8 @@ function renderCategory(category, newsList) {
   // 2026-10-28 修：以前这里直接把 <img> 换成空位，于是静态托管下图库 svg 不存在时
   // 列表里留下一排空位——而"配图不可空缺"是硬要求。现在与沉浸卡片一致，都换兜底图。
   list.querySelectorAll("img.news-thumb").forEach(el => {
+    // 看门狗：请求发出去却一直 pending（服务端忙）时，超时强制重试 / 换兜底图
+    if (typeof armImageWatchdog === "function") armImageWatchdog(el);
     el.addEventListener("error", () => {
       if (typeof coverImageError === "function") coverImageError(el);
       // coverImageError 成功时会打上 fbApplied 标记并把 src 换成兜底图
@@ -320,6 +322,7 @@ async function requestArticleCover(news) {
   el.onerror = () => { if (typeof coverImageError === "function") coverImageError(el, news); };
   el.src = img;
   media.appendChild(el);
+  if (typeof armImageWatchdog === "function") armImageWatchdog(el);
 }
 
 /**
@@ -738,6 +741,10 @@ function renderImmersiveCard() {
       </div>
     </div>
   `;
+
+  // 卡片封面挂看门狗：请求一直 pending（服务端忙）时，超时重试 / 换兜底图
+  const cardCover = document.querySelector("#immCard img");
+  if (cardCover && typeof armImageWatchdog === "function") armImageWatchdog(cardCover);
 
   // 同步取一次"源站正文配图"（/api/image）。
   // 卡片已经铺好分类渐变底，取到图就淡入，取不到就一直是渐变底，不闪白块。
