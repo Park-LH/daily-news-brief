@@ -4,6 +4,11 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>每日新闻简报 📰</title>
+<!-- 站点图标（favicon）：直接用 data URI 内嵌一张 SVG，不额外引文件。
+     2026-10-30 补：以前没有 favicon，浏览器会自动去请求 /favicon.ico 并 404
+     （不影响使用，但控制台一直有一条红字）。内嵌 SVG 后这条 404 消失，
+     而且不增加仓库文件、也不受 .gitignore 影响。 -->
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Ctext y='26' font-size='26'%3E%F0%9F%93%B0%3C/text%3E%3C/svg%3E">
 <!-- 样式表**不带**版本参数：源文件保持最干净的样子，任何环境下都能直接用。
      版本号由 start-server.ps1 在"发给浏览器那一刻"注入（见文件末尾说明），
      所以本地永远拿到最新 js/css；部署到静态托管时没有服务器注入，

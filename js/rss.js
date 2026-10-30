@@ -31,8 +31,13 @@ const ALLORIGINS_TIMEOUT_MS = 20000;
 /**
  * 从一个 RSS 地址抓取新闻列表（三级降级入口）
  *
- * 顺序：本地代理 /api/feed → rss2json → 抛中文错误（页面显示"源暂时无法访问"）
- * file:// 打开时没有本地服务器，跳过代理直接走 rss2json。
+ * 顺序：本地代理 /api/feed → rss2json → allorigins → 抛中文错误
+ *       （页面显示"源暂时无法访问"）
+ * file:// 打开时没有本地服务器，跳过代理直接走 rss2json / allorigins。
+ *
+ * ⚠️ 2026-10-30 修订：之前这里的注释只写了"本地代理 → rss2json"两级，
+ * 漏掉了 2026-10-27 加的 allorigins 第三通道（代码里是有的，注释没跟上）——
+ * 注释与实现不一致，会让人误判静态版的降级能力，已补全。
  *
  * @param {string} feedUrl RSS 订阅地址
  * @returns {Array} 新闻数组，每项含 title / link / summary / pubDate
