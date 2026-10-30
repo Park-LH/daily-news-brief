@@ -69,7 +69,8 @@ function summarizeText(text, maxLen = 90) {
     }
     out = next;
   }
-  return out || clean.slice(0, maxLen);
+  // 一句话摘要同样做通顺性校对（补"于"等缺失成分），缺成分的半截话读着最难受
+  return smoothExcerptPoint(out || clean.slice(0, maxLen));
 }
 
 /**
@@ -113,7 +114,54 @@ function extractKeyPoints(text, maxPoints = 4) {
     .slice(0, maxPoints)
     .sort((a, b) => a.index - b.index);
 
-  return picked.map(item => item.text);
+  return picked
+    .map(item => smoothExcerptPoint(item.text))   // 通顺性校对（补"于"等缺失成分）
+    .filter(s => s && !isTruncatedPoint(s));      // 半截句子宁可不摘
+}
+
+/**
+ * 摘抄要点的"通顺性校对"（2026-10-30 新增）
+ *
+ * 实测问题句（云南退役军人发布会那条的摘抄首句）：
+ *   "…高质量发展新闻发布会10月30日在昆明举行。"
+ * 主体（新闻发布会）后面直接跟日期，缺了介词"于"，读起来像"发布会"是日期的
+ * 修饰语——句子既不顺畅也不准确。规范写法是"…新闻发布会**于**10月30日在昆明举行"。
+ *
+ * 只处理这一处最典型、也最安全的情况：
+ *   <中文主体> + 日期 + （在）+ 地点/范围 + 举行|召开|举办|开幕|闭幕|启动|发布|举行
+ * 且日期前面不是"于/在/，/、/（"时才补"于"，避免把本来通顺的句子改坏。
+ *
+ * @param {string} s 单句
+ * @returns {string} 校对后的句子
+ */
+function smoothExcerptPoint(s) {
+  if (!s) return s;
+  // 主体（≥2 个汉字）直接接日期，且日期前不是 于/在/，/、/（/: 
+  return s.replace(
+    /([\u4e00-\u9fa5]{2,})((?:20\d{2}年)?\d{1,2}月\d{1,2}日)/g,
+    (m, subj, date, offset, whole) => {
+      const prev = whole.slice(Math.max(0, offset - 1), offset);
+      // ⚠️ 关键：必须再看**主体词的最后一个字**。"将于"里的"于"本身是汉字，
+      // 会被上面的中文主体一起吃掉；只查前一个字会得到"会"→ 误补成"将于于"
+      // （2026-10-30 实测就踩了这个坑）。
+      const subjTail = subj.slice(-1);
+      if (/[于在至从自]/.test(subjTail)) return m;   // 已经有介词，不补
+      if (/[于在，,、(（:：]/.test(prev)) return m;   // 前面是介词或停顿标点，不补
+      return subj + "于" + date;
+    }
+  );
+}
+
+/**
+ * 判断一条要点是不是"被截断的半截句子"
+ * 半截句子（以"将自""将于""以及""包括"等悬空成分收尾）读着最难受，
+ * 也不符合"摘抄必须完整"的要求——宁可不摘，也不要给读者一句残缺的话。
+ */
+function isTruncatedPoint(s) {
+  if (!s) return true;
+  const t = s.trim();
+  // 以悬空的连词/介词收尾，说明后面被切掉了
+  return /(?:将自|将于|以及|包括|其中|和|与|或|及|、|,|，)$/.test(t);
 }
 
 /**
