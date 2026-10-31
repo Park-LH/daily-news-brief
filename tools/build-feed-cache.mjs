@@ -89,12 +89,90 @@ async function fetchSource(s) {
 const results = [];
 for (const s of sources) results.push(await fetchSource(s));
 
+// ---- 3.5 抓文章页正文（只抓最新的若干条）----
+// 为什么：RSS 的 description 常常只有一句导语（实测这条"上海…卫星互联网"只有 28 字），
+// 静态站又没有 /api/article 可以现取正文，摘抄就只能给出那一句 —— 用户看到的
+// 就是"这条新闻缺少内容"。所以在服务端把正文也抓下来存进缓存，页面端直接摘。
+// 只抓最新的 MAX_ARTICLES 条：正文很占体积，全抓（163 条）文件会到几 MB。
+const MAX_ARTICLES = Number(process.env.MAX_ARTICLES || 40);
+const ARTICLE_CONCURRENCY = 3;
+
+function extractArticleText(html) {
+  let block = "";
+  const s = html.indexOf("<!--正文start-->");
+  const e = html.indexOf("<!--正文end-->");
+  if (s >= 0 && e > s) {
+    block = html.slice(s, e);
+  } else {
+    // 退路：按正文容器的 class 定位，到分享区 / 脚本区为止
+    const s2 = html.search(/<div[^>]+class=["'][^"']*left_zw[^"']*["']/i);
+    if (s2 >= 0) {
+      let e2 = html.indexOf('<div class="share"', s2);
+      if (e2 < 0) e2 = html.indexOf("<script", s2);
+      block = html.slice(s2, e2 > 0 ? e2 : s2 + 20000);
+    }
+  }
+  if (!block) return "";
+  return block
+    .replace(/<script[\s\S]*?<\/script>/gi, "")
+    .replace(/<style[\s\S]*?<\/style>/gi, "")
+    .replace(/<!--[\s\S]*?-->/g, "")
+    .replace(/<(p|br|div|li|h\d)[^>]*>/gi, "\n")
+    .replace(/<[^>]+>/g, "")
+    .replace(/&nbsp;/g, " ").replace(/&amp;/g, "&").replace(/&quot;/g, '"')
+    .replace(/&#39;/g, "'").replace(/&lt;/g, "<").replace(/&gt;/g, ">")
+    .split("\n").map(x => x.trim()).filter(Boolean).join("\n")
+    .trim();
+}
+
+async function fetchArticleText(item) {
+  const ctl = new AbortController();
+  const timer = setTimeout(() => ctl.abort(), 12000);
+  try {
+    const r = await fetch(item.link, {
+      signal: ctl.signal,
+      headers: { "User-Agent": "Mozilla/5.0 (compatible; feed-cache-builder)" },
+    });
+    if (!r.ok) return "";
+    const buf = Buffer.from(await r.arrayBuffer());
+    // 源站多数是 UTF-8；解出一堆替换字符就按 GB18030 再解一次
+    let html = buf.toString("utf8");
+    if ((html.match(/\uFFFD/g) || []).length > 20) {
+      html = new TextDecoder("gb18030").decode(buf);
+    }
+    return extractArticleText(html).slice(0, 12000);
+  } catch (e) {
+    return "";
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+// 按时间从新到旧，只取最新的 MAX_ARTICLES 条
+const flat = [];
+for (const r of results) for (const it of r.items) flat.push(it);
+flat.sort((a, b) => new Date(b.pubDate || 0) - new Date(a.pubDate || 0));
+const targets = flat.slice(0, MAX_ARTICLES);
+
+console.log(`\n开始抓正文（最新 ${targets.length} 条，并发 ${ARTICLE_CONCURRENCY}）……`);
+let cursor = 0, got = 0;
+async function worker() {
+  while (cursor < targets.length) {
+    const item = targets[cursor++];
+    const text = await fetchArticleText(item);
+    if (text && text.length > 80) { item.fullText = text; got++; }
+  }
+}
+await Promise.all(Array.from({ length: Math.min(ARTICLE_CONCURRENCY, targets.length) }, worker));
+console.log(`  正文抓到 ${got}/${targets.length} 条`);
+
 // ---- 4. 写文件 ----
 const out = {
   updatedAt: new Date().toISOString(),
   sourceCount: results.length,
   okCount: results.filter(r => r.ok).length,
   itemCount: results.reduce((n, r) => n + r.items.length, 0),
+  fullTextCount: flat.filter(i => i.fullText).length,
   sources: results,
 };
 fs.writeFileSync(outPath, JSON.stringify(out), "utf8");

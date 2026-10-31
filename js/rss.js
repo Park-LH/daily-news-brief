@@ -179,14 +179,16 @@ try {
     if (!src.ok && src.items.length === 0) throw new Error(`该源上次抓取失败：${src.error || "未知原因"}`);
     if (src.items.length === 0) throw new Error("该源在缓存里是空的");
 
+    // 缓存里有正文就用正文（Actions 抓的），没有才退回 RSS 描述；
+    // contentFromSummary 决定摘抄面板上写"摘自文章页正文"还是"该源只提供摘要"
     return src.items.map(item => ({
       title: stripHtml(item.title || ""),
       link: item.link || "",
       summary: stripHtml(item.summary || ""),
       pubDate: item.pubDate || "",
       image: "",
-      content: stripHtml(item.summary || "").slice(0, 3000),
-      contentFromSummary: true,
+      content: item.fullText || stripHtml(item.summary || "").slice(0, 3000),
+      contentFromSummary: !item.fullText,
     }));
   }
 
