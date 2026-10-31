@@ -977,11 +977,24 @@ async function renderInterpretation(news, panel) {
     return;
   }
 
-  const head = result.fromFullText
-    ? "新闻解读（依据文章页正文）"
-    : "新闻解读（只有 RSS 摘要，解读会很有限）";
+  // 八个角度里，只保留这篇正文里**真的读出内容**的那几个；
+  // 一个都没有 → 如实说明，绝不拿通用模板凑数（见 interpret.js 文件头"铁律二"）
+  const usable = result.sections.filter(sec => (sec.items || []).length > 0);
 
-  const html = result.sections.map(sec => {
+  if (usable.length === 0) {
+    panel.innerHTML = `<div class="imm-interpret-title">🔍 新闻解读</div>
+      <p class="imm-interpret-empty">这篇正文里没能识别出可用的解读点
+      （正文太短，或没有可识别的文件、数字、主体、时间等要素）。
+      与其给你一堆放之四海皆准的套话，不如就说实话——
+      点右边「打开原文 ↗」看完整文章更靠谱。</p>`;
+    return;
+  }
+
+  const head = result.fromFullText
+    ? `新闻解读 · ${usable.length} 个角度（依据文章页正文）`
+    : `新闻解读 · ${usable.length} 个角度（只有 RSS 摘要，会很有限）`;
+
+  const html = usable.map(sec => {
     const lines = [];
     (sec.items || []).forEach(it => {
       // 标签分两类：「原文」= 有原句依据；其余（通用判断/推演/视角/术语翻译/思考提示）
@@ -1003,21 +1016,18 @@ async function renderInterpretation(news, panel) {
       lines.push(`<li>${tag}${escapeHtml(it.text)}${ev}</li>`);
     });
     const note = sec.note ? `<p class="imm-it-note">${escapeHtml(sec.note)}</p>` : "";
-    const generic = (sec.generic || []).length
-      ? `<ul class="imm-it-generic">${sec.generic.map(g =>
-          `<li><span class="imm-it-tag" title="非原文，仅供参考的追问角度">通用判断</span>${escapeHtml(g)}</li>`).join("")}</ul>`
-      : "";
     return `<div class="imm-it-sec">
         <div class="imm-it-sec-title">${escapeHtml(sec.title)}</div>
         ${lines.length ? `<ul class="imm-it-list">${lines.join("")}</ul>` : ""}
-        ${note}${generic}
+        ${note}
       </div>`;
   }).join("");
 
   // 顶部图例：八个角度里只有带「原文」的是原文内容，其余都是思考框架——
   // 先讲清规则，读者才不会被"解读"误导（同 interpret.js 文件头的铁律）
-  const legend = `<p class="imm-it-legend">带「原文」的下面附原句依据，可逐条自查；`
-    + `「通用判断 / 推演 / 视角 / 术语翻译 / 思考提示」都<strong>不是</strong>原文内容，供你自行判断。</p>`;
+  const legend = `<p class="imm-it-legend">只显示这篇正文里<strong>真的读出内容</strong>的角度；`
+    + `带「原文」的下面附原句依据，可逐条自查；`
+    + `「通用判断 / 推演 / 术语翻译 / 思考提示」都<strong>不是</strong>原文内容，供你自行判断。</p>`;
 
   panel.innerHTML = `<div class="imm-interpret-title">🔍 ${head}</div>${legend}${html}`;
 }
