@@ -137,7 +137,10 @@ function renderCategory(category, newsList) {
         <div class="summary">${escapeHtml(news.summary || "（这条新闻没有自带摘要，点击标题查看原文）")}</div>
         <div class="meta">
           <span>来源：${escapeHtml(formatSourceLabel(news))}</span>
-          ${news.time ? `<span>${escapeHtml(news.time)}</span>` : ""}
+          ${news.dayLabel
+            // 今天条数不足时补进来的"近日要闻"：标出日期，避免被当成今天的新闻
+            ? `<span class="news-day-old" title="今天的新闻较少，这是最近几天的要闻">${escapeHtml(news.dayLabel)}</span>`
+            : (news.time ? `<span>${escapeHtml(news.time)}</span>` : "")}
         </div>
       </div>
     </article>
@@ -1285,8 +1288,36 @@ $("btnGenerate").addEventListener("click", async () => {
     // 打印过滤前后数量（浏览器按 F12 → Console 可看到这行）
     console.log(`[时间过滤] 过滤前共 ${countBefore} 条，今天 00:00 后保留 ${todayRaw.length} 条`);
 
+    // ---- 第 2.2 步：今天不够就放宽到最近几天（见 config.js 的 MIN_TODAY_NEWS）----
+    // 静态托管（GitHub Pages）没有本地代理，每个源只有最新 10 条，
+    // 实测"只要今天"一过滤常只剩几条 → 四个板块里三个是空的。
+    // 这里在**今天实在不够**时补进最近几天的要闻，并给每条打上日期标签，
+    // 页面上不会对"今天/近日"产生误导。
+    let filtered = todayRaw;
+    let relaxedDays = 0;
+    if (todayRaw.length < MIN_TODAY_NEWS) {
+      const relaxStart = new Date();
+      relaxStart.setHours(0, 0, 0, 0);
+      relaxStart.setDate(relaxStart.getDate() - (RELAX_TO_DAYS - 1));
+      filtered = allNews.filter(news => {
+        const d = new Date(news.pubDate);
+        return !isNaN(d.getTime()) && d >= relaxStart;
+      });
+      relaxedDays = RELAX_TO_DAYS;
+      console.log(`[时间过滤] 今天只有 ${todayRaw.length} 条（不足 ${MIN_TODAY_NEWS}）`
+        + ` → 放宽到最近 ${RELAX_TO_DAYS} 天，取到 ${filtered.length} 条（非今天的会标出日期）`);
+    }
+    // 给每条标好"是不是今天的"，不是今天的再算出 10-30 这样的日期标签
+    filtered.forEach(news => {
+      const d = new Date(news.pubDate);
+      news.isToday = d >= todayStart;
+      news.dayLabel = news.isToday
+        ? ""
+        : `${d.getMonth() + 1}-${String(d.getDate()).padStart(2, "0")}`;
+    });
+
     // ---- 第 2.5 步：去重 + 板块互斥 + 科技池归类 ----
-    const todayNews = dedupeAndAssignCategories(todayRaw);
+    const todayNews = dedupeAndAssignCategories(filtered);
 
     // ---- 第 3 步：按时间从新到旧排序，再挑出列表页要显示的新闻 ----
     todayNews.sort((a, b) => new Date(b.pubDate) - new Date(a.pubDate));
@@ -1353,9 +1384,18 @@ $("btnGenerate").addEventListener("click", async () => {
     briefing.classList.remove("hidden");
 
     // 部分源失败时给出温和提示（不影响已抓到的新闻展示）
+    const hints = [];
+    if (relaxedDays > 0 && todayNews.length > 0) {
+      // 今天条数不足、已补进最近几天的要闻：如实说明，别让用户以为都是今天的
+      const n = todayNews.filter(x => x.isToday).length;
+      hints.push(`ℹ️ 今天只抓到 ${n} 条新文章，已补充最近 ${relaxedDays} 天的要闻`
+        + `（卡片上标了日期，如 ${[...new Set(todayNews.map(x => x.dayLabel).filter(Boolean))].slice(0, 2).join("、")}）`);
+    }
     if (failedSources.length > 0 && todayNews.length > 0) {
-      error.textContent = "⚠️ 以下源暂时无法访问：" + failedSources.join("、")
-        + "。其余源已正常展示，可稍后重试。";
+      hints.push("⚠️ 以下源暂时无法访问：" + failedSources.join("、") + "。其余源已正常展示，可稍后重试。");
+    }
+    if (hints.length > 0) {
+      error.textContent = hints.join("\n");
       error.classList.remove("hidden");
     }
 
