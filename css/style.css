@@ -900,6 +900,19 @@ footer {
   margin: 2px 0 0;
 }
 
+/* 解读面板顶部的"标签图例"：先讲清哪类是原文、哪类是思考框架 */
+.imm-it-legend {
+  margin: 0 0 10px;
+  padding: 6px 9px;
+  font-size: 12.5px;
+  line-height: 1.65;
+  color: #94a3b8;
+  background: rgba(148, 163, 184, 0.1);
+  border-radius: 6px;
+}
+
+.imm-it-legend strong { color: #cbd5e1; }
+
 /* 卡片里"暂无新闻"的提示 */
 .imm-empty-card {
   flex: 1;

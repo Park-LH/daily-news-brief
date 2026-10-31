@@ -984,9 +984,19 @@ async function renderInterpretation(news, panel) {
   const html = result.sections.map(sec => {
     const lines = [];
     (sec.items || []).forEach(it => {
-      const tag = it.tag === "通用判断"
-        ? `<span class="imm-it-tag" title="这是根据文本信号做出的通用判断，原文没有这么写">通用判断</span>`
-        : `<span class="imm-it-tag is-fact">原文</span>`;
+      // 标签分两类：「原文」= 有原句依据；其余（通用判断/推演/视角/术语翻译/思考提示）
+      // 都不是原文内容，用灰标签 + 各自的名字，鼠标悬停有说明
+      const TAG_TIPS = {
+        "通用判断": "从文本信号做出的常识性判断，原文并没有这么写",
+        "推演": "“若…则…”的条件式推断，不是对未来的承诺",
+        "视角": "建议你自己去补看的立场，原文里未必有，需另行查证",
+        "术语翻译": "对词语本身的解释（词典式），不是对这条新闻的结论",
+        "思考提示": "留给你自己回答的问题，代码不下结论",
+      };
+      const label = it.tag || "通用判断";
+      const isFact = label === "原文";
+      const tip = isFact ? "来自原文，下面附原句依据，可自查" : (TAG_TIPS[label] || "非原文内容");
+      const tag = `<span class="imm-it-tag${isFact ? " is-fact" : ""}" title="${escapeHtml(tip)}">${escapeHtml(label)}</span>`;
       const ev = it.evidence
         ? `<div class="imm-it-evidence">依据：${escapeHtml(it.evidence)}</div>`
         : "";
@@ -1004,7 +1014,12 @@ async function renderInterpretation(news, panel) {
       </div>`;
   }).join("");
 
-  panel.innerHTML = `<div class="imm-interpret-title">🔍 ${head}</div>${html}`;
+  // 顶部图例：八个角度里只有带「原文」的是原文内容，其余都是思考框架——
+  // 先讲清规则，读者才不会被"解读"误导（同 interpret.js 文件头的铁律）
+  const legend = `<p class="imm-it-legend">带「原文」的下面附原句依据，可逐条自查；`
+    + `「通用判断 / 推演 / 视角 / 术语翻译 / 思考提示」都<strong>不是</strong>原文内容，供你自行判断。</p>`;
+
+  panel.innerHTML = `<div class="imm-interpret-title">🔍 ${head}</div>${legend}${html}`;
 }
 
 /* ---------- 阶段 2：上下翻页 ---------- */
