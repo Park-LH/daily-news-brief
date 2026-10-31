@@ -298,6 +298,27 @@ body {
 
 .empty-tip { font-size: 13px; color: #94a3b8; }
 
+/* ===== 手机端提示：用电脑看更高清的新闻图（2026-10-31 新增）=====
+   只在窄屏显示，宽屏隐藏（见文件末尾的媒体查询） */
+.pc-hd-tip {
+  margin: 12px auto 0;
+  max-width: 720px;
+  padding: 9px 14px;
+  font-size: 13px;
+  line-height: 1.7;
+  text-align: center;
+  word-break: break-all;
+  color: #cbd5e1;
+  background: rgba(59, 130, 246, 0.12);
+  border: 1px solid rgba(59, 130, 246, 0.28);
+  border-radius: 10px;
+}
+
+.pc-hd-tip a {
+  color: #93c5fd;
+  text-decoration: underline;
+}
+
 /* ===== 错误提示 ===== */
 .error {
   margin-top: 24px;
@@ -937,4 +958,11 @@ footer {
   .imm-summary { font-size: 16px; }
   .imm-info { padding: 14px 16px 16px; }
   .imm-btn-sub, .imm-open { font-size: 14px; padding: 12px 8px; }
+}
+
+/* ===== 电脑（宽屏）不需要「用电脑看更高清图」这条提示 =====
+   这条提示是给手机用户看的（手机上新闻图是前端现画的兜底图，
+   电脑上同一地址能拿到更清晰的新闻图）；本来就坐在电脑前，再提示就是废话。 */
+@media (min-width: 768px) {
+  .pc-hd-tip { display: none; }
 }

@@ -38,6 +38,17 @@
     </div>
   </header>
 
+  <!-- ===== 手机端提示：用电脑看更高清的新闻图（2026-10-31 新增）=====
+       只在窄屏（手机）显示：
+       手机上为了省流量、也因为没有本地配图服务，新闻图用的是前端现画的兜底图；
+       用电脑打开同一地址能拿到更清晰的新闻图。
+       宽屏（≥768px）时由 style.css 隐藏——本来就坐在电脑前，再提示就是废话。 -->
+  <div class="pc-hd-tip" id="pcHdTip">
+    💻 用电脑浏览/搜索
+    <a href="https://park-lh.github.io/daily-news-brief/" target="_blank" rel="noopener">https://park-lh.github.io/daily-news-brief/</a>
+    ，可预览更高清新闻图
+  </div>
+
   <!-- ===== 加载中提示（默认隐藏） ===== -->
   <div class="loading hidden" id="loading">
     <span class="spinner"></span>
