@@ -94,7 +94,11 @@ for (const s of sources) results.push(await fetchSource(s));
 // 静态站又没有 /api/article 可以现取正文，摘抄就只能给出那一句 —— 用户看到的
 // 就是"这条新闻缺少内容"。所以在服务端把正文也抓下来存进缓存，页面端直接摘。
 // 只抓最新的 MAX_ARTICLES 条：正文很占体积，全抓（163 条）文件会到几 MB。
-const MAX_ARTICLES = Number(process.env.MAX_ARTICLES || 40);
+// 抓哪些：先保证"最近 36 小时内"的条目**全部**有正文（用户当天看到的都有），
+// 再按时间倒序补到上限。之前只取"最新 40 条"，结果今天早上 06:39 发的
+// 《多个领域捷报频传…》排在 40 名之外 → 没抓正文 → 用户在手机上看到内容缺失。
+const MAX_ARTICLES = Number(process.env.MAX_ARTICLES || 80);
+const FRESH_WINDOW_HOURS = 36;
 const ARTICLE_CONCURRENCY = 3;
 
 function extractArticleText(html) {
@@ -148,11 +152,15 @@ async function fetchArticleText(item) {
   }
 }
 
-// 按时间从新到旧，只取最新的 MAX_ARTICLES 条
+// 最近 36 小时内的排前面（用户当天要看到的），其余按时间倒序补到上限
 const flat = [];
 for (const r of results) for (const it of r.items) flat.push(it);
-flat.sort((a, b) => new Date(b.pubDate || 0) - new Date(a.pubDate || 0));
-const targets = flat.slice(0, MAX_ARTICLES);
+const cut = Date.now() - FRESH_WINDOW_HOURS * 3600 * 1000;
+const fresh = flat.filter(i => new Date(i.pubDate || 0).getTime() >= cut)
+                  .sort((a, b) => new Date(b.pubDate || 0) - new Date(a.pubDate || 0));
+const older = flat.filter(i => new Date(i.pubDate || 0).getTime() < cut)
+                  .sort((a, b) => new Date(b.pubDate || 0) - new Date(a.pubDate || 0));
+const targets = [...fresh, ...older].slice(0, MAX_ARTICLES);
 
 console.log(`\n开始抓正文（最新 ${targets.length} 条，并发 ${ARTICLE_CONCURRENCY}）……`);
 let cursor = 0, got = 0;

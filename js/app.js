@@ -869,6 +869,16 @@ async function renderExcerptPoints(news, panel) {
 
   const fromFullText = news.contentFromSummary === false;   // true = 文章页正文
   const source = news.content || news.rawSummary || news.summary || "";
+
+  // ⚠️ 2026-10-31 修：素材太少时（实测有源只给"本周"两个字），硬摘出来也只有一句废话，
+  // 用户只会觉得"这条没内容"。这时如实说明并给原文链接，别拿残缺素材凑数。
+  if (String(source).replace(/\s+/g, "").length < 30) {
+    panel.innerHTML = `<div class="imm-excerpt-title">📌 ${escapeHtml(news.category)} · 正文要点</div>
+      <p class="imm-excerpt-empty">这条新闻的正文没能取到（源站只给了 ${source.length} 个字的摘要）。
+      点右边「打开原文 ↗」可以看完整文章。</p>`;
+    return;
+  }
+
   const points = extractKeyPoints(source, fromFullText ? 5 : 4);
 
   // 标题要如实说明要点来源（undefined = rss2json 通道，它给的是完整 content）
@@ -1402,7 +1412,14 @@ $("btnGenerate").addEventListener("click", async () => {
       // 先把 RSS 原始摘要留一份底稿：万一这个源没提供正文，
       // 「摘抄正文」还能用它兜底，不至于一片空白
       news.rawSummary = news.summary;
-      news.summary = await generateSummary(news.title, news.summary);
+      // ⚠️ 2026-10-31 修：有些源的 description 被截得只剩两三个字
+      //（实测「多个领域捷报频传！本周我国硬核成果持续上新」这条只有"本周"两个字），
+      // 拿它做摘要等于没有内容。这时只要手上有正文，就用正文来生成摘要。
+      const tooShort = String(news.summary || "").replace(/\s+/g, "").length < 20;
+      const material = (tooShort && news.content && news.contentFromSummary === false)
+        ? news.content
+        : news.summary;
+      news.summary = (await generateSummary(news.title, material)) || news.rawSummary;
     }
 
     // ---- 第 4 步：按分类渲染到四个板块 ----
