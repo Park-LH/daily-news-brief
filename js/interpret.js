@@ -280,7 +280,7 @@ function buildRelation(sentences) {
     if (ps) {
       const w = PEOPLE_WORDS.find(x => ps.includes(x));
       items.push({
-        text: `原文直接点名了「${w}」：${phraseAround(ps, w, 8, 28)}——这件事说的就是这批人。`,
+        text: `直接点名了「${w}」：${phraseAround(ps, w, 8, 28)}——这件事说的就是这批人。`,
         evidence: ps,
         tag: "原文",
       });

@@ -812,7 +812,15 @@ footer {
    深色是背景（点它＝关闭），白色圆角卡片是内容。 */
 .io-layer {
   position: fixed;
-  inset: 0;
+  /* ⚠️ 2026-10-31 修：原来写的是 inset: 0。老一点的手机浏览器（旧版 Chromium /
+     UC / QQ / 微信内置浏览器）不认识 inset，这个浮层就没有定位，页面会看起来
+     "点了没反应"或错位。改成四个方向都写明，兼容性最稳。 */
+  top: 0;
+  right: 0;
+  bottom: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
   z-index: 900;
   background: rgba(15, 23, 42, 0.55);
   display: flex;
@@ -836,12 +844,12 @@ footer {
   overflow: hidden;
 }
 
-/* 顶栏：左边是这条新闻的标题，右边是关闭按钮 */
+/* 顶栏：左边是这条新闻的标题，右边是关闭按钮
+   （不用 flex 的 gap：老浏览器不支持，改用 margin 拉开距离） */
 .io-head {
   flex: none;
   display: flex;
   align-items: center;
-  gap: 12px;
   padding: 14px 16px;
   border-bottom: 1px solid #e2e8f0;
   background: #f8fafc;
@@ -859,6 +867,7 @@ footer {
   -webkit-line-clamp: 2;
   -webkit-box-orient: vertical;
   overflow: hidden;
+  margin-right: 12px;   /* 代替 flex gap：老浏览器也认 */
 }
 
 .io-close {

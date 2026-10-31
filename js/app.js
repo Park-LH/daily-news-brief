@@ -918,12 +918,42 @@ $("immCard").addEventListener("click", e => {
  *
  * 与「摘抄正文」仍是互斥的：打开解读时自动收起摘抄。
  */
+/**
+ * 拿到解读浮层；**没有就现场造一个**。
+ *
+ * ⚠️ 2026-10-31 修（手机端"解读点不动"最可能的原因）：
+ * 浮层的 HTML 写在 index.html 里，而手机浏览器常缓存旧版 HTML。
+ * 旧 HTML 里没有 #interpretOverlay 这个节点 → 原来 toggleInterpret 直接
+ * `if (!layer) return` → **按钮点了完全没反应**，用户就认为功能坏了。
+ * 现在缺节点时由 JS 补建，保证任何版本的 HTML 下按钮都不会哑火。
+ */
+function ensureInterpretLayer() {
+  let layer = $("interpretOverlay");
+  if (layer && typeof layer.classList !== "undefined") return layer;
+
+  layer = document.createElement("div");
+  layer.className = "io-layer hidden";
+  layer.id = "interpretOverlay";
+  layer.setAttribute("role", "dialog");
+  layer.setAttribute("aria-label", "新闻解读");
+  layer.innerHTML =
+    '<div class="io-sheet">'
+    + '<div class="io-head">'
+    + '<div class="io-title" id="ioTitle">🔍 新闻解读</div>'
+    + '<button class="io-close" id="ioClose" type="button">关闭 ✕</button>'
+    + '</div>'
+    + '<div class="io-body" id="ioBody"></div>'
+    + '</div>';
+  document.body.appendChild(layer);
+  return layer;
+}
+
 function toggleInterpret() {
   const news = latestNews[immIndex];
   if (!news) return;
 
-  const layer = $("interpretOverlay");
-  const body = $("ioBody");
+  const layer = ensureInterpretLayer();
+  const body = $("ioBody") || layer.querySelector("#ioBody");
   if (!layer || !body) return;
 
   if (layer.classList.contains("hidden")) {
@@ -979,8 +1009,14 @@ document.addEventListener("keydown", e => {
  * @param {HTMLElement} panel 解读面板（#immInterpret）
  */
 async function renderInterpretation(news, panel) {
-  // 解读要有正文才靠得住：没有正文就先试着取一次
-  if (news.contentFromSummary !== false) await fetchArticleBody(news);
+  // 解读要有正文才靠得住：没有正文就先试着取一次。
+  // ⚠️ 这里必须 try/catch：取正文一旦抛错，下面的渲染就全不执行，
+  // 页面会永远停在"正在解读…"（2026-10-31 加固）
+  try {
+    if (news.contentFromSummary !== false) await fetchArticleBody(news);
+  } catch (e) {
+    console.warn("[新闻解读] 取正文失败，改用现有素材解读：", e && e.message);
+  }
 
   // 用户可能在等待期间翻页、或已经把这个页面关掉了
   const liveBody = document.getElementById("ioBody");
@@ -988,7 +1024,20 @@ async function renderInterpretation(news, panel) {
   if (latestNews[immIndex] !== news || !liveBody || liveBody !== panel) return;
   if (!layer || layer.classList.contains("hidden")) return;   // 已关闭就不用再渲染了
 
-  const result = buildInterpretation(news);
+  const result = (() => {
+    try {
+      return buildInterpretation(news);
+    } catch (e) {
+      // 解读引擎本身出错也要给个交代，不能停在"正在解读…"
+      console.warn("[新闻解读] 生成失败：", e && e.message);
+      panel.innerHTML = `<p class="io-empty">解读生成时出错了（${escapeHtml((e && e.message) || "未知原因")}）。`
+        + `下面是原文链接，可以先看完整文章：</p>`
+        + (news.link ? `<p class="io-empty-link"><a href="${escapeHtml(news.link)}" target="_blank" rel="noopener">打开原文 ↗</a></p>` : "");
+      return null;
+    }
+  })();
+  if (!result) return;
+
   const src = interpretSource(news);
 
   // 素材太少：解读一定空洞，如实说明，别拿几个字硬凑
