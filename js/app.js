@@ -766,8 +766,8 @@ function renderImmersiveCard() {
       <!-- 「摘抄正文」展开后显示在这里，默认隐藏 -->
       <div class="imm-excerpt hidden" id="immExcerpt"></div>
 
-      <!-- 「新闻解读」展开后显示在这里，默认隐藏（三问：与你我有关 / 来龙去脉 / 文件背后） -->
-      <div class="imm-interpret hidden" id="immInterpret"></div>
+      <!-- 「新闻解读」不再塞在这张卡片里（塞不下、字也小）：
+           点按钮后会打开一个整屏的独立放大页面 #interpretOverlay（见 index.html） -->
 
       <div class="imm-meta">
         <span>来源：${escapeHtml(formatSourceLabel(news))}</span>
@@ -907,46 +907,66 @@ $("immCard").addEventListener("click", e => {
   if (e.target.closest("#immInterpretBtn")) toggleInterpret();
 });
 
-/* ---------- 新闻解读（三问：与你我有关 / 来龙去脉 / 文件背后）---------- */
+/* ---------- 新闻解读（打开一个独立的整屏放大页面）---------- */
 
 /**
- * 展开 / 收起「新闻解读」面板
+ * 打开 / 关闭「新闻解读」
  *
- * 与「摘抄正文」互斥：两个面板同时展开会把卡片挤得没法看，
- * 所以展开一个时自动收起另一个（按钮文字也一并复位）。
+ * 2026-10-31 改：解读内容长、又要看得清，塞在卡片里那块小地方不行
+ * （字号被迫压到 13px）。现在改成**整屏的独立页面** #interpretOverlay，
+ * 字号放到舒服的 17px；关闭后回到沉浸卡片。
+ *
+ * 与「摘抄正文」仍是互斥的：打开解读时自动收起摘抄。
  */
 function toggleInterpret() {
   const news = latestNews[immIndex];
   if (!news) return;
 
-  const panel = $("immInterpret");
-  const summary = $("immSummary");
-  const btn = $("immInterpretBtn");
-  if (!panel || !summary || !btn) return;
+  const layer = $("interpretOverlay");
+  const body = $("ioBody");
+  if (!layer || !body) return;
 
-  const isHidden = panel.classList.contains("hidden");
-
-  if (isHidden) {
-    // 先把摘抄收起来（互斥），再展开解读
+  if (layer.classList.contains("hidden")) {
+    // 先把摘抄收起来（互斥）
     const exPanel = $("immExcerpt");
     const exBtn = $("immExcerptBtn");
     if (exPanel && !exPanel.classList.contains("hidden")) {
       exPanel.classList.add("hidden");
       if (exBtn) exBtn.textContent = "📄 摘抄正文";
     }
-    panel.innerHTML = `<div class="imm-interpret-title">🔍 正在解读…</div>`;
-    panel.classList.remove("hidden");
-    summary.classList.add("hidden");
-    btn.textContent = "收起解读 ✕";
-    $("immCard").classList.add("interpret-open");
-    renderInterpretation(news, panel);
+    // 标题先放新闻标题，读的时候知道在读哪条
+    const t = $("ioTitle");
+    if (t) t.textContent = `🔍 ${news.title || "新闻解读"}`;
+    body.innerHTML = `<p class="io-loading">正在解读…</p>`;
+    body.scrollTop = 0;
+    layer.classList.remove("hidden");
+    document.body.classList.add("io-open");
+    renderInterpretation(news, body);
   } else {
-    panel.classList.add("hidden");
-    summary.classList.remove("hidden");
-    btn.textContent = "🔍 新闻解读";
-    $("immCard").classList.remove("interpret-open");
+    closeInterpret();
   }
 }
+
+/** 关闭解读页面（关闭按钮 / Esc / 点背景空白处都走这里） */
+function closeInterpret() {
+  const layer = $("interpretOverlay");
+  if (!layer) return;
+  layer.classList.add("hidden");
+  document.body.classList.remove("io-open");
+  const btn = $("immInterpretBtn");
+  if (btn) btn.textContent = "🔍 新闻解读";
+}
+
+// 解读页面在 #immCard 之外（它是 body 级别的整屏层），所以单独绑，
+// 不能混进 #immCard 的事件委托里
+document.addEventListener("click", e => {
+  if (e.target.closest && e.target.closest("#ioClose")) { closeInterpret(); return; }
+  // 点标题栏以外的深色背景区域＝关闭（点内容区不关）
+  if (e.target && e.target.id === "interpretOverlay") closeInterpret();
+});
+document.addEventListener("keydown", e => {
+  if (e.key === "Escape") closeInterpret();
+});
 
 /**
  * 渲染「新闻解读」到面板
@@ -962,18 +982,20 @@ async function renderInterpretation(news, panel) {
   // 解读要有正文才靠得住：没有正文就先试着取一次
   if (news.contentFromSummary !== false) await fetchArticleBody(news);
 
-  // 用户可能在等待期间翻页或收起了面板
-  const livePanel = document.getElementById("immInterpret");
-  if (latestNews[immIndex] !== news || !livePanel || livePanel !== panel) return;
+  // 用户可能在等待期间翻页、或已经把这个页面关掉了
+  const liveBody = document.getElementById("ioBody");
+  const layer = document.getElementById("interpretOverlay");
+  if (latestNews[immIndex] !== news || !liveBody || liveBody !== panel) return;
+  if (!layer || layer.classList.contains("hidden")) return;   // 已关闭就不用再渲染了
 
   const result = buildInterpretation(news);
   const src = interpretSource(news);
 
   // 素材太少：解读一定空洞，如实说明，别拿几个字硬凑
   if (!result.ok || String(src.text).replace(/\s+/g, "").length < 60) {
-    panel.innerHTML = `<div class="imm-interpret-title">🔍 新闻解读</div>
-      <p class="imm-interpret-empty">这条新闻的正文没读到（源站只给了很短的摘要），
-      没法做靠谱的解读。点右边「打开原文 ↗」可以看完整文章。</p>`;
+    panel.innerHTML = `<p class="io-empty">这条新闻的正文没读到（源站只给了很短的摘要），
+      没法做靠谱的解读。下面是原文链接，可以直接看完整文章：</p>
+      ${news.link ? `<p class="io-empty-link"><a href="${escapeHtml(news.link)}" target="_blank" rel="noopener">打开原文 ↗</a></p>` : ""}`;
     return;
   }
 
@@ -982,11 +1004,11 @@ async function renderInterpretation(news, panel) {
   const usable = result.sections.filter(sec => (sec.items || []).length > 0);
 
   if (usable.length === 0) {
-    panel.innerHTML = `<div class="imm-interpret-title">🔍 新闻解读</div>
-      <p class="imm-interpret-empty">这篇正文里没能识别出可用的解读点
+    panel.innerHTML = `<p class="io-empty">这篇正文里没能识别出可用的解读点
       （正文太短，或没有可识别的文件、数字、主体、时间等要素）。
       与其给你一堆放之四海皆准的套话，不如就说实话——
-      点右边「打开原文 ↗」看完整文章更靠谱。</p>`;
+      下面是原文链接，可以直接看完整文章：</p>
+      ${news.link ? `<p class="io-empty-link"><a href="${escapeHtml(news.link)}" target="_blank" rel="noopener">打开原文 ↗</a></p>` : ""}`;
     return;
   }
 
@@ -1002,7 +1024,7 @@ async function renderInterpretation(news, panel) {
       const TAG_TIPS = {
         "通用判断": "从文本信号做出的常识性判断，原文并没有这么写",
         "推演": "“若…则…”的条件式推断，不是对未来的承诺",
-        "视角": "建议你自己去补看的立场，原文里未必有，需另行查证",
+        "参考见解": "结合这条新闻给你的一个参考判断，不是事实，也不是唯一答案",
         "术语翻译": "对词语本身的解释（词典式），不是对这条新闻的结论",
         "思考提示": "留给你自己回答的问题，代码不下结论",
       };
@@ -1027,9 +1049,9 @@ async function renderInterpretation(news, panel) {
   // 先讲清规则，读者才不会被"解读"误导（同 interpret.js 文件头的铁律）
   const legend = `<p class="imm-it-legend">只显示这篇正文里<strong>真的读出内容</strong>的角度；`
     + `带「原文」的下面附原句依据，可逐条自查；`
-    + `「通用判断 / 推演 / 术语翻译 / 思考提示」都<strong>不是</strong>原文内容，供你自行判断。</p>`;
+    + `「通用判断 / 推演 / 参考见解 / 术语翻译 / 思考提示」都<strong>不是</strong>原文内容，供你自行判断。</p>`;
 
-  panel.innerHTML = `<div class="imm-interpret-title">🔍 ${head}</div>${legend}${html}`;
+  panel.innerHTML = `<p class="io-sub">${escapeHtml(head)}</p>${legend}${html}`;
 }
 
 /* ---------- 阶段 2：上下翻页 ---------- */

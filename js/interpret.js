@@ -77,10 +77,14 @@ const STRUCT_SIGNALS = [
   [/首次|第一次|首型|首个|首艘|首台|首例/, "「首次 / 首个」：通常意味着从 0 到 1 的突破，后续看点在于能否规模化、常态化。"],
   [/试点|示范|先行|试验区/, "「试点 / 示范」：先在局部验证，效果好才可能推广——现在影响面还有限。"],
   [/征求意见|草案|审议|待批|拟/, "「征求意见 / 草案」：尚未定稿，内容和时间都可能改，别当既成事实。"],
-  [/到(19|20)\d{2}年|力争|目标|时间表/, "给了明确时间表 / 目标值：这类承诺可以事后对照检查。"],
-  [/部署|会议|要求|强调|推进|印发/, "处在「部署 / 推进」阶段：真正的看点是细则、资金和督查。"],
-  [/基金|专项资金|投资|补贴|亿元|万元|亿美元/, "涉及真金白银：资金规模与来源决定它能推多快、铺多广。"],
-  [/监管|规范|整治|查处|处罚|标准/, "带监管 / 规范性质：会改变行业合规成本，进而影响价格和从业者。"],
+  // ⚠️ 2026-10-31 修：下面这三条原来用了太泛的词，实测把"目标设置是怎么样的？"（一句问句）
+  // 判成"给了时间表"、"大规模生产的要求"判成"部署推进"、"标准操作流程"判成"监管规范"
+  // ——判断本身与原文不符，比没有更糟。一律收紧成有辨识度的搭配。
+  // ⚠️ 别再加"期限"这种词：实测"综合考虑交货期限、设备负荷…"被判成"给了时间表"
+  [/到(19|20)\d{2}年|力争|目标值|时间表/, "给了明确时间表 / 目标值：这类承诺可以事后对照检查。"],
+  [/部署|印发|推进|启动|开工|出台|下发/, "处在「部署 / 推进」阶段：真正的看点是细则、资金和督查。"],
+  [/基金|专项资金|补贴|财政|拨款/, "涉及真金白银：资金规模与来源决定它能推多快、铺多广。"],
+  [/监管|整治|查处|处罚|规范/, "带监管 / 规范性质：会改变行业合规成本，进而影响价格和从业者。"],
 ];
 
 /* ---------- ④ 影响评估与利益关联 ---------- */
@@ -92,6 +96,11 @@ const COST_WORDS = ["成本", "负担", "压力", "涨价", "费用", "受限", 
 const SCALE_RE = /\d+(?:\.\d+)?\s*(?:万亿元|亿元|万元|亿美元|亿千瓦|万千瓦|万公里|颗|艘|架|台|公里|万吨|吨|%|个百分点|GW|MW)/;
 /* 机构 / 责任主体：用来回答"这件事是谁在办" */
 const ORG_RE = /[\u4e00-\u9fa5]{2,10}(?:局|部|委|厅|署|市政府|省政府|管委会|集团|公司|大学|研究院|协会|银行|中心|企业)/;
+/* 机构名前面常带的介词，匹配到后要剥掉（"据中央纪委国家监委" → "中央纪委国家监委"） */
+const ORG_PREFIX_RE = /^(据|从|由|与|和|对|在|经|向|被|给)/;
+/* 原文直接点名的人群——民生维度没命中时，用它补足"这条跟谁有关" */
+const PEOPLE_WORDS = ["居民", "市民", "群众", "农民", "学生", "老人", "职工", "消费者", "患者",
+  "青年", "儿童", "女性", "残疾人", "农民工", "毕业生", "家庭", "百姓", "民众"];
 
 /* ---------- ⑤ 另一面：只抽原文里真实存在的不同声音 ---------- */
 /* 表态动词：用来抓"谁说了什么"——不同主体的说法本身就是多元视角 */
@@ -104,8 +113,9 @@ const RESERVE_WEAK_RE = /(但|然而|不过|却)/;
 const NEXT_SIGNALS = [
   [/试点|示范|先行|试验区/, "处在「试点」阶段：推演路径是 试点 → 验收/评估 → 推广，现在只在第 1 步。"],
   [/征求意见|草案|审议|待批/, "还是「征求意见/草案」：推演是 稿子 → 修改 → 正式发布，内容都可能改。"],
-  [/到(19|20)\d{2}年|力争|目标|时间表/, "给了时间表：可以对照 deadline 检查进度，到点没兑现本身就是信号。"],
-  [/部署|印发|要求|推进|启动|开工|筹建/, "处在「部署/启动」：推演是 文件 → 细则 → 资金/责任到人 → 落地。"],
+  // 同上：裸的"目标/要求"会把问句和无关句子也判成信号，收紧
+  [/到(19|20)\d{2}年|力争|目标值|时间表/, "给了时间表：可以对照 deadline 检查进度，到点没兑现本身就是信号。"],
+  [/部署|印发|推进|启动|开工|筹建|出台/, "处在「部署/启动」：推演是 文件 → 细则 → 资金/责任到人 → 落地。"],
   [/建成|完成|投产|开通|获批|突破/, "说的是「已完成」：推演是 看后续运行数据（用起来怎么样、达没达到设计目标）。"],
 ];
 /* 原文自己写的下一步 / 计划 */
@@ -195,6 +205,51 @@ function pickByRe(sentences, re, limit, used) {
   return out;
 }
 
+/* ---------- 把解析写得"有内容"的三个小工具（2026-10-31 新增）----------
+ * 上一版被批评"只有依据、不见解析内容"：每条只给一个标签（如"关乎「通信/网络」"）
+ * 加一整句原文，读者看不到**解析本身**。
+ * 有了下面这几个工具，解析句里就能带上从原文抠出来的具体片段
+ * （谁、多少钱、什么时间、哪个文件），而不是空标签。 */
+
+/** 抠出"关键词前后"的一小段，让解析句带上具体内容 */
+function phraseAround(sentence, word, before = 6, after = 26) {
+  if (!sentence) return "";
+  const i = sentence.indexOf(word);
+  if (i < 0) return String(sentence).slice(0, 40);
+  const start = Math.max(0, i - before);
+  const end = Math.min(sentence.length, i + String(word).length + after);
+  return (start > 0 ? "…" : "") + sentence.slice(start, end) + (end < sentence.length ? "…" : "");
+}
+
+/** 取句子的核心片段（尽量在标点处收尾，别截在半截词上） */
+function coreOf(sentence, maxLen = 46) {
+  const s = String(sentence || "").trim();
+  if (s.length <= maxLen) return s;
+  const cut = s.slice(0, maxLen);
+  const last = Math.max(cut.lastIndexOf("，"), cut.lastIndexOf("、"), cut.lastIndexOf("；"));
+  return (last > maxLen * 0.5 ? cut.slice(0, last) : cut) + "…";
+}
+
+/**
+ * 这个词是不是**长在机构名里**？
+ * 实测："中国移动通信集团浙江有限公司…"里的"通信"被当成了"关乎通信/网络"——
+ * 其实那只是公司名字。命中词前後出现公司/集团这类后缀时，不算民生话题。
+ */
+function wordInsideOrg(sentence, word) {
+  const i = String(sentence).indexOf(word);
+  if (i < 0) return false;
+  const win = String(sentence).slice(Math.max(0, i - 10), Math.min(String(sentence).length, i + String(word).length + 10));
+  return /(公司|集团|有限公司|分公司|工厂|厂区)/.test(win);
+}
+
+/** 抽取"某某表示 / 指出"之后说了什么（让"另一种声音"有内容） */
+function quoteAfterVerb(sentence) {
+  const m = String(sentence || "").match(/(表示|称|指出|认为|说|强调|呼吁|建议|批评|质疑|回应|介绍|透露|宣布)([^。！？]{0,60})/);
+  if (!m) return "";
+  const q = m[2].replace(/^[,，:：、]?\s*/, "").replace(/^["“”']+/, "").trim();
+  return q.length > 4 ? q.slice(0, 56) : "";
+}
+
 /* ============================================================
  * ① 与你我有关
  * ============================================================ */
@@ -203,8 +258,33 @@ function buildRelation(sentences) {
   const used = new Set();
   for (const [dim, words] of LIFE_DIMENSIONS) {
     const hit = pickBestSentence(sentences, words, used);
-    if (hit) items.push({ text: `关乎「${dim}」`, evidence: hit, tag: "原文" });
+    if (!hit) continue;
+    // 找出到底命中了哪个词，把它的上下文抠出来写进解析句——
+    // 只写"关乎「X」"等于没解析（2026-10-31 用户批评后修）
+    const word = words.find(w => hit.includes(w)) || "";
+    // 命中的只是机构名的一部分（如"中国移动通信集团…"里的"通信"）→ 不算
+    if (wordInsideOrg(hit, word)) continue;
+    const frag = phraseAround(hit, word, 8, 28);
+    items.push({
+      text: `关乎「${dim}」：原文写到「${frag}」——也就是说，这条新闻跟你在这方面的日常是直接挂钩的。`,
+      evidence: hit,
+      tag: "原文",
+    });
     if (items.length >= 4) break;
+  }
+
+  // 民生维度一个都没命中时，再看原文有没有**直接点名人群**
+  // （"居民 / 学生 / 消费者…"）——有就列出来，别让这一节空着
+  if (items.length === 0) {
+    const ps = sentences.find(s => PEOPLE_WORDS.some(w => s.includes(w)));
+    if (ps) {
+      const w = PEOPLE_WORDS.find(x => ps.includes(x));
+      items.push({
+        text: `原文直接点名了「${w}」：${phraseAround(ps, w, 8, 28)}——这件事说的就是这批人。`,
+        evidence: ps,
+        tag: "原文",
+      });
+    }
   }
   return { items, note: "" };
 }
@@ -232,10 +312,25 @@ function buildOrigin(sentences) {
   const used = new Set();
 
   const causes = pickByRe(sentences, CAUSE_HINT_RE, 1, used);
-  if (causes.length) items.push({ text: "缘起：原文给出的起因 / 依据", evidence: causes[0], tag: "原文" });
+  if (causes.length) {
+    const cw = (causes[0].match(CAUSE_HINT_RE) || [""])[0];
+    items.push({
+      text: `缘起：这件事的起因是「${phraseAround(causes[0], cw, 2, 30)}」。`,
+      evidence: causes[0],
+      tag: "原文",
+    });
+  }
 
   const timeline = pickByRe(sentences, TIME_HINT_RE, 4, used);
-  timeline.forEach(s => items.push({ text: dateLabelOf(s), evidence: s, tag: "原文" }));
+  timeline.forEach((s, i) => {
+    // 标出这一步在整条链里的位置：第一条是起点，最后一条是最新进展
+    const pos = i === 0 ? "起点" : (i === timeline.length - 1 ? "最新进展" : "中间一步");
+    items.push({
+      text: `${pos}（${dateLabelOf(s)}）：${coreOf(s, 52)}`,
+      evidence: s,
+      tag: "原文",
+    });
+  });
 
   return { items, note: "" };
 }
@@ -268,9 +363,12 @@ function buildBehind(sentences) {
     if (!withName && !goal) continue;
     used.add(withName);
     if (goal) used.add(goal);
+    const base = goal || withName;
     items.push({
-      text: `点名文件《${nm}》${goal ? "：原文写明了它的要求 / 目标" : "：原文只提到名称，没展开内容"}`,
-      evidence: goal || withName,
+      text: goal
+        ? `点名文件《${nm}》，它定的要求是：${coreOf(goal, 56)}`
+        : `点名文件《${nm}》，但原文只提到名称，没展开具体要求：${coreOf(withName, 56)}`,
+      evidence: base,
       tag: "原文",
     });
   }
@@ -280,7 +378,13 @@ function buildBehind(sentences) {
     const s = sentences.find(x => !used.has(x) && re.test(x));
     if (!s) continue;
     used.add(s);
-    items.push({ text: tip, evidence: s, tag: "通用判断" });
+    const m = s.match(re);
+    items.push({
+      // 把触发这句的**具体表述**写进解析，别只给一句通用说明
+      text: `${tip} 触发这句的是「${phraseAround(s, m ? m[0] : "", 5, 20)}」。`,
+      evidence: s,
+      tag: "通用判断",
+    });
     if (items.length >= 6) break;
   }
 
@@ -295,25 +399,56 @@ function buildImpact(sentences) {
   const used = new Set();
 
   const benefit = pickBestSentence(sentences, BENEFIT_WORDS, used);
-  if (benefit) items.push({ text: "受益方（原文点到的一方）", evidence: benefit, tag: "原文" });
+  if (benefit) {
+    const w = BENEFIT_WORDS.find(x => benefit.includes(x)) || "";
+    items.push({
+      text: `谁受益：${phraseAround(benefit, w, 8, 30)}——这是原文点到的受益 / 被扶持一方。`,
+      evidence: benefit,
+      tag: "原文",
+    });
+  }
 
-  const cost = pickBestSentence(sentences, COST_WORDS, used);
-  if (cost) items.push({ text: "承担成本 / 受约束的一方", evidence: cost, tag: "原文" });
+  // ⚠️ "降低企业数智化转型成本"里的"成本"是**受益**，不是承担——
+  // 句子里出现"降低/减少/减轻"时，这条不该算进"谁承担"（2026-10-31 修）
+  const cost = pickBestSentence(
+    sentences.filter(s => !/(降低|较低|减少|减轻|下降|压降)/.test(s)), COST_WORDS, used);
+  if (cost) {
+    const w = COST_WORDS.find(x => cost.includes(x)) || "";
+    items.push({
+      text: `谁承担：${phraseAround(cost, w, 8, 30)}——这是原文点到的要出钱 / 受约束的一方。`,
+      evidence: cost,
+      tag: "原文",
+    });
+  }
 
   // 涉及机构 / 责任主体：回答"这件事是谁在办"
   const orgSent = sentences.find(s => !used.has(s) && ORG_RE.test(s));
   if (orgSent) {
     const om = orgSent.match(ORG_RE);
+    // 剥掉"据 / 由 / 从…"这类前缀，否则会输出"据中央纪委国家监委"这种怪名字
+    const orgName = om ? om[0].replace(ORG_PREFIX_RE, "") : "（原文提到的机构）";
     used.add(orgSent);
-    items.push({ text: `涉及主体：${om ? om[0] : "（原文提到的机构）"}`, evidence: orgSent, tag: "原文" });
+    items.push({
+      text: `谁来办：${orgName}——推进责任落在这个主体身上（${coreOf(orgSent, 54)}）。`,
+      evidence: orgSent,
+      tag: "原文",
+    });
   }
 
   // 规模量级：只取原文真的写了的数字
-  const scaleSents = sentences.filter(s => !used.has(s) && SCALE_RE.test(s)).slice(0, 2);
+  // 企业营收 / 销售额这类数字不代表"这件事的规模"，排除掉（2026-10-31 修）
+  const scaleSents = sentences
+    .filter(s => !used.has(s) && SCALE_RE.test(s) && !/(营业收入|营收|销售额|市值|净利润)/.test(s))
+    .slice(0, 2);
   scaleSents.forEach(s => {
     used.add(s);
     const sm = s.match(SCALE_RE);
-    items.push({ text: `规模量级：${sm ? sm[0] : "（原文数字）"}`, evidence: s, tag: "原文" });
+    items.push({
+      text: `规模量级 ${sm ? sm[0] : "（原文数字）"}：${phraseAround(s, sm ? sm[0] : "", 10, 26)}`
+        + `——数字越大，牵扯的钱和人也越多，越值得盯后续。`,
+      evidence: s,
+      tag: "原文",
+    });
   });
 
   return { items, note: "" };
@@ -341,7 +476,14 @@ function extractSpeaker(sentence) {
     if (tail.length >= 2) who = tail;
   }
   who = who.replace(/^(据|而|同时|此外|另外|其中|对此|并)/, "").trim();
-  return who.length >= 2 && who.length <= 12 ? who : "";
+  // 还不短的话，按职务词切："…总经理吴建军" → "吴建军"（2026-10-31 修：
+  // 以前只按"的"切，"阿里巴巴千问AI硬件产品总经理吴建军"这种长头衔取不到名字，
+  // 整串超长就被丢弃，说话人只能显示成"原文中的一方"）
+  if (who.length > 8) {
+    const pm = who.match(/(总经理|总监|负责人|局长|部长|主任|教授|董事长|书记|经理|工程师|专家|会长|院士|总裁|主管|老师)([\u4e00-\u9fa5A-Za-z·]{2,8})$/);
+    if (pm) who = pm[2];
+  }
+  return who.length >= 2 && who.length <= 16 ? who : "";
 }
 
 function buildOtherSide(sentences) {
@@ -352,8 +494,16 @@ function buildOtherSide(sentences) {
   const voiceSents = pickByRe(sentences, VOICE_RE, 3, used);
   voiceSents.forEach(s => {
     const who = extractSpeaker(s);
+    const said = quoteAfterVerb(s);
+    // 只写了个"某某说。"而没说内容的（常见于分段引语的前半句）→ 不输出，
+    // 否则条目内容就是一句身份介绍，等于没有解析（2026-10-31 修）
+    if (said.length < 10) return;
     items.push({
-      text: who ? `另一种声音：${who}的说法` : "另一种声音：原文中不同主体的表态",
+      // 把"他到底说了什么"写出来，而不是只标一个名字。
+      // ⚠️ 文案不要以"原文"开头：渲染时「原文」标签就排在前面，会读成"原文原文…"
+      text: said
+        ? `${who || "文中的一方"}的说法：${said}`
+        : `${who || "文中的一方"}的说法：${coreOf(s, 52)}`,
       evidence: s,
       tag: "原文",
     });
@@ -362,7 +512,14 @@ function buildOtherSide(sentences) {
   // (b) 保留 / 风险表述：先强信号，没有再用转折词兜底（并跳过首句，避免误抓导语）
   let reserves = pickByRe(sentences, RESERVE_STRONG_RE, 2, used);
   if (reserves.length === 0) reserves = pickByRe(sentences.slice(1), RESERVE_WEAK_RE, 1, used);
-  reserves.forEach(s => items.push({ text: "自己写到的保留 / 风险表述", evidence: s, tag: "原文" }));
+  reserves.forEach(s => {
+    const m = s.match(RESERVE_STRONG_RE) || s.match(RESERVE_WEAK_RE);
+    items.push({
+      text: `自己也留了余地：「${phraseAround(s, m ? m[0] : "", 6, 30)}」——这是它承认的难点 / 不确定性。`,
+      evidence: s,
+      tag: "原文",
+    });
+  });
 
   return { items, note: "" };
 }
@@ -377,20 +534,39 @@ function buildNext(sentences) {
 
   // (a) 原文自己写的下一步 / 计划 / 时间表
   const plans = pickByRe(sentences, NEXT_PLAN_RE, 2, used);
-  plans.forEach(s => items.push({ text: "原文写明的下一步 / 时间表：若如期推进，则按这个节点走", evidence: s, tag: "推演" }));
+  plans.forEach(s => {
+    const m = s.match(NEXT_PLAN_RE);
+    items.push({
+      text: `按原文写的，下一步是「${phraseAround(s, m ? m[0] : "", 6, 30)}」——若如期推进，事情会按这个节点往下走。`,
+      evidence: s,
+      tag: "推演",
+    });
+  });
 
   // (b) 阶段性推演（同样必须指回触发它的原句）
   for (const [re, tip] of NEXT_SIGNALS) {
     const s = sentences.find(x => !used.has(x) && re.test(x));
     if (!s) continue;
     used.add(s);
-    items.push({ text: tip, evidence: s, tag: "推演" });
+    const m = s.match(re);
+    items.push({
+      text: `${tip} 依据是这句里的「${phraseAround(s, m ? m[0] : "", 5, 22)}」。`,
+      evidence: s,
+      tag: "推演",
+    });
     if (items.length >= 5) break;
   }
 
   // (c) 关键节点：只有原文真的提到 验收/推广/督查… 才提，不写死"三个观察点"
   const nodes = pickByRe(sentences, NODE_RE, 2, used);
-  nodes.forEach(s => items.push({ text: "接下来该盯的节点（原文提到的）", evidence: s, tag: "推演" }));
+  nodes.forEach(s => {
+    const m = s.match(NODE_RE);
+    items.push({
+      text: `接下来可以盯住「${phraseAround(s, m ? m[0] : "", 6, 26)}」——这是原文给出的可验证节点。`,
+      evidence: s,
+      tag: "推演",
+    });
+  });
 
   // (d) 机会识别：只在原文真的谈到产业/岗位/市场时才提示方向
   // 只在**同时**命中 ≥2 个机会词时才提示，避免"精神生活需求"这种单词误报
@@ -400,7 +576,8 @@ function buildNext(sentences) {
     const hit = OPPORTUNITY_WORDS.filter(w => opp.includes(w)).slice(0, 3);
     used.add(opp);
     items.push({
-      text: `涉及「${hit.join("、")}」：若推进，相关方向与岗位需求可能随之变化——仅为方向提示，不构成建议`,
+      text: `这件事连着「${hit.join("、")}」：${phraseAround(opp, hit[0], 6, 26)}`
+        + `——若推进，相关方向的人才和需求可能跟着动，但这是方向提示，不构成任何建议。`,
       evidence: opp,
       tag: "推演",
     });
@@ -437,29 +614,85 @@ function buildHowToThink(sentences) {
   const full = sentences.join(" ");
 
   const facts = pickByRe(sentences, FACT_RE, 2, used);
-  facts.forEach(s => items.push({ text: "【已经发生的事实】", evidence: s, tag: "原文" }));
+  facts.forEach(s => items.push({
+    text: `已经发生的事实：${coreOf(s, 54)}`,
+    evidence: s,
+    tag: "原文",
+  }));
 
   const stance = pickByRe(sentences, STANCE_RE, 1, used);
-  if (stance.length) items.push({ text: "【打算做 / 表态】（还没发生，别当既成事实）", evidence: stance[0], tag: "原文" });
+  if (stance.length) items.push({
+    text: `打算做 / 表态（还没发生，别当既成事实）：${coreOf(stance[0], 54)}`,
+    evidence: stance[0],
+    tag: "原文",
+  });
 
   const pending = pickByRe(sentences, PENDING_RE, 1, used);
-  if (pending.length) items.push({ text: "【还没定 / 待验证】（草案、研究中，或只是预测）", evidence: pending[0], tag: "原文" });
+  if (pending.length) items.push({
+    text: `还没定 / 待验证（草案、研究中，或只是预测）：${coreOf(pending[0], 54)}`,
+    evidence: pending[0],
+    tag: "原文",
+  });
 
-  // 针对这篇的具体追问：只用这篇里**真的出现**的要素，不用通用问题
-  const asks = [];
+  /* ---------- 参考见解 ----------
+   * 2026-10-31 用户要求："我该怎么想"不能只给思考提示，要给**参考的见解**。
+   * 所以下面是基于**这篇里真实出现的要素**给出的判断，全部标为「参考见解」：
+   * 它是一家之言、不是事实，也不是唯一答案，但不再是空问题。 */
+  const views = [];
   const docM = full.match(/《([^》]{2,30})》/);
-  if (docM) asks.push(`原文提到的《${docM[1]}》，配套细则什么时候出、谁负责？`);
   const moneyM = full.match(SCALE_RE);
-  if (moneyM) asks.push(`这笔 ${moneyM[0]} 由谁出、最终谁受益？`);
   const dateM = full.match(/到(19|20)\d{2}年/);
-  if (dateM) asks.push(`到了 ${dateM[0].replace("到", "")} ，我该怎么验证它兑现没兑现？`);
   const orgM = full.match(ORG_RE);
-  if (orgM) asks.push(`落实责任在 ${orgM[0]} 这类部门身上，进度去哪儿查？`);
-  asks.slice(0, 3).forEach(a => items.push({ text: a, evidence: "", tag: "思考提示" }));
+
+  if (dateM) {
+    views.push(`我的看法：这篇给了 ${dateM[0].replace("到", "")} 这个时间点，这是很值钱的信息——`
+      + `承诺只要有明确日期，事后就能对照兑现与否。建议把这个日期记下来，到时回来看一眼。`);
+  }
+  if (moneyM) {
+    views.push(`我的看法：涉及 ${moneyM[0]} 的钱。判断一件事是"真干"还是"表态"，`
+      + `最硬的指标就是钱到没到位、谁出——比任何措辞都可靠。`);
+  }
+  if (docM) {
+    views.push(`我的看法：真正的看点是《${docM[1]}》的**配套细则**。`
+      + `文件本身通常只定方向，细则才写清谁出钱、谁执行、什么时候完成；细则不出，影响就落不了地。`);
+  }
+  if (orgM) {
+    const orgName = orgM[0].replace(ORG_PREFIX_RE, "");
+    views.push(`我的看法：责任主体指向 ${orgName} 这类部门。想知道进度，`
+      + `最直接的办法是盯它的官网/通报，而不是等二手转述。`);
+  }
+  if (facts.length && stance.length) {
+    views.push(`我的看法：这条里"已经发生的"和"打算做的"是两回事——`
+      + `已发生部分是硬的、可以核实；"打算做"的部分还要看细则和资金，建议分开看待，别混在一起下结论。`);
+  } else if (!facts.length && stance.length) {
+    views.push(`我的看法：通篇以"打算做 / 要推动"为主，目前没有既成事实可以核实。`
+      + `这种消息先当"方向"看比较稳妥，等细则或资金中的任意一样落实了再认真对待。`);
+  }
+  if (pending.length) {
+    views.push(`我的看法：里面有"研究中 / 有望 / 预测"这类表述，属于还没定的部分。`
+      + `这类内容经常被当成既成事实转述，看到时记得打问号。`);
+  }
+  if (views.length === 0) {
+    // 一个具体要素都没识别出来：如实说"可核实的抓手很少"，不给空泛建议
+    views.push(`我的看法：这篇里既没有时间表、金额、文件，也没有明确责任部门——`
+      + `能被事后验证的抓手很少，建议以原文链接为准，别只信转述。`);
+  }
+  views.slice(0, 4).forEach(v => items.push({ text: v, evidence: "", tag: "参考见解" }));
+
+  // 针对这篇的具体追问：只用**真的出现**的要素，不用放之四海皆准的问题
+  const asks = [];
+  if (docM) asks.push(`《${docM[1]}》的配套细则什么时候出、谁负责？`);
+  if (moneyM) asks.push(`这笔 ${moneyM[0]} 由谁出、最终谁受益？`);
+  if (dateM) asks.push(`到了 ${dateM[0].replace("到", "")} ，我该怎么验证它兑现没兑现？`);
+  if (orgM) asks.push(`${orgM[0].replace(ORG_PREFIX_RE, "")} 这类部门的进度，我该去哪儿查？`);
+  asks.slice(0, 2).forEach(a => items.push({ text: a, evidence: "", tag: "思考提示" }));
 
   return {
     items,
-    note: items.length ? "先把原文分成「事实 / 表态 / 未定」三类，再问自己下面几条——判断留给你，代码不下结论。" : "",
+    note: items.length
+      ? "先把原文分成「事实 / 表态 / 未定」三类；下面标「参考见解」的是我基于这篇给出的判断，"
+        + "是一家之言、不是事实也不是唯一答案，你可以不同意。最后两三条留给你自己回答。"
+      : "",
   };
 }
 

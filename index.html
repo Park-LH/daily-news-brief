@@ -181,6 +181,20 @@
 <script src="js/interpret.js?v=202610311932"></script>
 <script src="js/config.js?v=202610311932"></script>
 <script src="js/rss.js?v=202610311932"></script>
+<!-- ===== 新闻解读：独立放大页面（2026-10-31 改）=====
+     以前解读是塞在沉浸卡片里的一小块，字号被压到 13~14px，手机上得眯着眼看。
+     现在改成整屏的独立页面：全屏铺满、字号放到舒服的 17px（依据 15px），
+     顶部有标题和关闭按钮；关闭后回到沉浸卡片。 -->
+<div class="io-layer hidden" id="interpretOverlay" role="dialog" aria-modal="true" aria-label="新闻解读">
+  <div class="io-sheet">
+    <div class="io-head">
+      <div class="io-title" id="ioTitle">🔍 新闻解读</div>
+      <button class="io-close" id="ioClose" type="button">关闭 ✕</button>
+    </div>
+    <div class="io-body" id="ioBody"></div>
+  </div>
+</div>
+
 <script src="js/stats.js?v=202610311932"></script>
 <script src="js/fallbackImage.js?v=202610311932"></script>
 <script src="js/aiImage.js?v=202610311932"></script>
