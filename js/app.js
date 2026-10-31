@@ -423,6 +423,42 @@ function pickCategoryNews(sortedNews, category) {
   return picked;
 }
 
+/**
+ * 按板块补缺（2026-10-31 新增）
+ *
+ * 场景：今天的新闻总量够，但**个别板块**不够（实测周六：今天共 60 条，科技只命中 1 条）。
+ * 全局放宽到"最近 3 天"太粗（会把所有板块都掺进旧闻），所以这里只给**缺的板块**补：
+ * 哪个板块的条数没到配额，就从"近日池"里按时间取最新的补进去（已标好日期，
+ * 渲染时会显示 10-30 这样的标签，不会冒充今天的新闻）。
+ *
+ * @param {Array} baseList 今天的新闻（已去重、已定板块）
+ * @param {Array} extraPool 近日池（非今天，已去重、已定板块）
+ * @returns {Array} 补缺后的数组
+ */
+function topUpCategoryPool(baseList, extraPool) {
+  const CATEGORY_ORDER = ["政治", "科技", "财经", "生活"];
+  const out = baseList.slice();
+  const have = new Set(out.map(n => n.link || n.title));
+
+  for (const category of CATEGORY_ORDER) {
+    const cur = out.filter(n => n.category === category).length;
+    const quota = categoryQuota(category);
+    if (cur >= quota) continue;
+
+    const pool = extraPool
+      .filter(n => n.category === category && !have.has(n.link || n.title))
+      .sort((a, b) => new Date(b.pubDate) - new Date(a.pubDate));
+    if (pool.length === 0) continue;
+
+    const add = pool.slice(0, quota - cur);
+    add.forEach(n => have.add(n.link || n.title));
+    out.push(...add);
+    console.log(`[板块补缺] ${category}：今天 ${cur} 条 < 配额 ${quota}`
+      + ` → 补入 ${add.length} 条近日要闻（卡片上会标出日期）`);
+  }
+  return out;
+}
+
 function buildListNews(sortedNews) {
   const CATEGORY_ORDER = ["政治", "科技", "财经", "生活"];
   const list = [];
@@ -1316,8 +1352,42 @@ $("btnGenerate").addEventListener("click", async () => {
         : `${d.getMonth() + 1}-${String(d.getDate()).padStart(2, "0")}`;
     });
 
+    // 板块补缺用的"近日池"：最近 RELAX_TO_DAYS 天里**不属于今天**的那些。
+    // 全局条数够、但个别板块（如周六的科技）不足时，靠它补齐（见第 2.6 步）。
+    let recentPool = [];
+    if (relaxedDays === 0) {
+      const relaxStart = new Date();
+      relaxStart.setHours(0, 0, 0, 0);
+      relaxStart.setDate(relaxStart.getDate() - (RELAX_TO_DAYS - 1));
+      recentPool = allNews.filter(news => {
+        const d = new Date(news.pubDate);
+        return !isNaN(d.getTime()) && d >= relaxStart && d < todayStart;
+      });
+      // ⚠️ 必须给池子里的每条也打上 isToday / dayLabel：
+      // 上面只给 filtered（今天那批）打过标记，这里不打的话，
+      // 第 2.6 步用 `isToday === false` 过滤时会把整个池子滤空，补缺等于白做
+      // （2026-10-31 实测就踩了这个坑：日志显示池子有 96 条，却一条都没补进去）。
+      recentPool.forEach(news => {
+        const d = new Date(news.pubDate);
+        news.isToday = false;      // 池子里本来就只放今天之前的
+        news.dayLabel = `${d.getMonth() + 1}-${String(d.getDate()).padStart(2, "0")}`;
+      });
+      if (recentPool.length > 0) {
+        console.log(`[时间过滤] 另外备好近日池 ${recentPool.length} 条（供板块补缺用）`);
+      }
+    }
+
     // ---- 第 2.5 步：去重 + 板块互斥 + 科技池归类 ----
-    const todayNews = dedupeAndAssignCategories(filtered);
+    let todayNews = dedupeAndAssignCategories(filtered);
+
+    // ---- 第 2.6 步：按板块补缺（2026-10-31 新增）----
+    // 上面的"今天不足 N 条"是**全局**判断，够粗。实测周六：今天共 60 条（够多），
+    // 但科技只命中 1 条 → 科技板块空荡荡。所以再按**板块**补一次：
+    // 哪个板块没凑够配额，就从"最近几天"的同板块新闻里补，卡片上照旧标日期。
+    if (recentPool.length > 0) {
+      const extra = dedupeAndAssignCategories(recentPool).filter(n => n.isToday === false);
+      todayNews = topUpCategoryPool(todayNews, extra);
+    }
 
     // ---- 第 3 步：按时间从新到旧排序，再挑出列表页要显示的新闻 ----
     todayNews.sort((a, b) => new Date(b.pubDate) - new Date(a.pubDate));
@@ -1390,6 +1460,14 @@ $("btnGenerate").addEventListener("click", async () => {
       const n = todayNews.filter(x => x.isToday).length;
       hints.push(`ℹ️ 今天只抓到 ${n} 条新文章，已补充最近 ${relaxedDays} 天的要闻`
         + `（卡片上标了日期，如 ${[...new Set(todayNews.map(x => x.dayLabel).filter(Boolean))].slice(0, 2).join("、")}）`);
+    }
+    // 板块补缺进来的"近日要闻"也要如实说明：
+    // 卡片上虽然有 10-30 这样的日期标签，但没人解释"为什么会有昨天的新闻"，
+    // 用户会以为是 bug（2026-10-31 自查发现）
+    const oldOnes = topNews.filter(n => n.isToday === false).length;
+    if (oldOnes > 0 && todayNews.length > 0) {
+      hints.push(`ℹ️ 其中有 ${oldOnes} 条是最近几天的要闻（该板块今天条数不足，补进来的），`
+        + `卡片上已标出日期（如 ${[...new Set(topNews.map(n => n.dayLabel).filter(Boolean))].slice(0, 2).join("、")}）`);
     }
     if (failedSources.length > 0 && todayNews.length > 0) {
       hints.push("⚠️ 以下源暂时无法访问：" + failedSources.join("、") + "。其余源已正常展示，可稍后重试。");

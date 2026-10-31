@@ -57,10 +57,10 @@ async function fetchRss(feedUrl) {
   if (!hasServer && !fileModeHintShown) {
     fileModeHintShown = true;
     console.log(
-      "[RSS] 当前是 file:// 直开（双击 index.html）：没有本地服务器，只能走 rss2json，" +
-      "每个源只返回最新 10 条（用本地代理能拿到约 30 条）。\n" +
-      "[RSS] 因此科技池候选从约 110 条降到约 40 条，各板块条数会明显变少——属正常现象，不是故障。\n" +
-      "[RSS] 想拿全量：请用 start-server.bat 打开页面（启用本地代理）。"
+      "[RSS] 当前是 file:// 直开（双击 index.html）：没有本地服务器，会依次尝试" +
+      "仓库缓存 feed-cache.json → rss2json（每源只 10 条）→ allorigins。\n" +
+      "[RSS] 想拿全量：用 start-server.bat 打开页面（启用本地代理），或在仓库里放一份" +
+      "feed-cache.json（GitHub Actions 每小时自动生成，见 .github/workflows/fetch-feed.yml）。"
     );
   }
 
@@ -76,7 +76,22 @@ async function fetchRss(feedUrl) {
     }
   }
 
-  // ---- 通道 2：rss2json（失败会降级到通道 3，不再直接抛错）----
+  // ---- 通道 2：仓库缓存 feed-cache.json（静态托管的"全量通道"，2026-10-31 新增）----
+// 背景：GitHub Pages 上没有本地代理，公共代理又各有短板——
+//   rss2json 稳但每源只给 10 条（提量参数要付费 key）；allorigins 能给 30 条却
+//   实测连续 522/502/408 且并发会被限流。
+// 于是改用 GitHub Actions 定时在服务端直连源站抓全量，写进仓库的
+// feed-cache.json（.github/workflows/fetch-feed.yml，每小时一次）。
+// 页面这里是**同源**读取：既没有跨域问题，也不依赖第三方，条数与本地代理一致。
+try {
+  const items = await fetchViaRepoCache(feedUrl);
+  logFetchResult(feedUrl, "仓库缓存 feed-cache.json", items.length, started);
+  return items;
+} catch (ec) {
+  console.warn(`[RSS] 仓库缓存不可用，降级到 rss2json：${ec.message}`);
+}
+
+// ---- 通道 3：rss2json（失败会降级到通道 4，不再直接抛错）----
   // 2026-10-27 加了通道 3：静态托管（GitHub Pages）上没有本地代理，
   // rss2json 是唯一新闻来源；它一旦不可达，线上就会"整站没有新闻"。
   // 多一条公共代理通道，站点在访客网络下的存活率高得多。
@@ -99,8 +114,81 @@ async function fetchRss(feedUrl) {
   }
 
   // 三条通道都失败：抛中文错误，由调用方显示"以下源暂时无法访问"
-  throw new Error("所有新闻通道都不可用（本地代理 / rss2json / allorigins）");
-}
+  throw new Error("所有新闻通道都不可用（本地代理 / 仓库缓存 / rss2json / allorigins）");
+  }
+
+  /**
+   * 通道 2：读仓库里的 feed-cache.json（GitHub Actions 定时抓取，静态站的主力通道）
+   *
+   * 整份缓存**只拉一次**（7 个源共用），拉不到或太旧就抛错让位给下一条通道。
+   * 超时 8 秒：这个文件只有几百 KB，慢就说明不可用，别拖住页面。
+   */
+  const REPO_CACHE_PATH = "feed-cache.json";
+  const REPO_CACHE_TIMEOUT_MS = 8000;
+  const REPO_CACHE_MAX_AGE_HOURS = 12;   // 超过 12 小时没更新就认为失效（正常是每小时更新）
+
+  // ⚠️ 2026-10-31 实测踩坑（务必记牢）：一开始这里存的是"结果 + 是否已试过"两个变量，
+  // 结果 7 个源**并发**调用时，第一个请求还在飞，后 6 个看到"已试过 = true、结果还是 null"
+  // 就全部判定不可用→ 只有 1 个源吃到缓存，其余 6 个白走 rss2json（条数又回到 10/源）。
+  // 正解：**共享同一个 Promise**——不管多少个调用者同时来，都等这一份请求的结果。
+  let repoCachePromise = null;
+
+  function loadRepoCacheOnce() {
+    if (repoCachePromise) return repoCachePromise;   // 已经在飞（或已完成），复用
+
+    repoCachePromise = (async () => {
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), REPO_CACHE_TIMEOUT_MS);
+      try {
+        const resp = await fetch(`${REPO_CACHE_PATH}?t=${Date.now()}`,
+                                 { signal: controller.signal, cache: "no-store" });
+        if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+        const data = await resp.json();
+        const ageMs = Date.now() - new Date(String(data.updatedAt || "")).getTime();
+        if (!data.updatedAt || !isFinite(ageMs) || ageMs < 0) throw new Error("缓存里没有更新时间");
+        if (ageMs > REPO_CACHE_MAX_AGE_HOURS * 3600 * 1000) {
+          throw new Error(`缓存已过期（${(ageMs / 3600000).toFixed(1)} 小时前更新）`);
+        }
+        console.log(`[RSS] 仓库缓存可用：${data.sourceCount} 个源 / ${data.itemCount} 条，`
+          + `更新于 ${new Date(data.updatedAt).toLocaleString("zh-CN")}`);
+        return data;
+      } catch (e) {
+        const why = (e && e.name === "AbortError")
+          ? `读取超时（${REPO_CACHE_TIMEOUT_MS} 毫秒）`
+          : ((e && e.message) || "未知原因");
+        console.warn(`[RSS] 仓库缓存不可用：${why}`);
+        return null;
+      } finally {
+        clearTimeout(timer);
+      }
+    })();
+
+    return repoCachePromise;
+  }
+
+  async function loadRepoCache() {
+    const data = await loadRepoCacheOnce();
+    if (!data) throw new Error("仓库缓存不可用（本次已试过一次）");
+    return data;
+  }
+
+  async function fetchViaRepoCache(feedUrl) {
+    const data = await loadRepoCache();
+    const src = (data.sources || []).find(s => s.url === feedUrl);
+    if (!src) throw new Error("缓存里没有这个源");
+    if (!src.ok && src.items.length === 0) throw new Error(`该源上次抓取失败：${src.error || "未知原因"}`);
+    if (src.items.length === 0) throw new Error("该源在缓存里是空的");
+
+    return src.items.map(item => ({
+      title: stripHtml(item.title || ""),
+      link: item.link || "",
+      summary: stripHtml(item.summary || ""),
+      pubDate: item.pubDate || "",
+      image: "",
+      content: stripHtml(item.summary || "").slice(0, 3000),
+      contentFromSummary: true,
+    }));
+  }
 
 /**
  * 通道 1：走本地服务器代理 /api/feed?url=...

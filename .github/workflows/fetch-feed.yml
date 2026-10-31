@@ -1,0 +1,47 @@
+name: 更新新闻源缓存
+
+# 静态托管（GitHub Pages）没有本地 /api/feed，公共代理每源只给 10 条、
+# 且经常限流。这里在服务端定时直连源站抓取全量条目，写进仓库的 feed-cache.json，
+# 页面端（js/rss.js 的 fetchViaRepoCache）同源直读：快、全量、不依赖第三方。
+on:
+  schedule:
+    - cron: "23 * * * *"      # 每小时的第 23 分跑一次
+  workflow_dispatch:          # 也允许在 Actions 页面手动点一次
+  push:
+    paths:
+      - "js/config.js"        # 源列表一改就立刻重建
+      - "tools/build-feed-cache.mjs"
+
+permissions:
+  contents: write             # 需要写回 feed-cache.json
+
+concurrency:
+  group: feed-cache
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: 取出仓库
+        uses: actions/checkout@v4
+
+      - name: 准备 Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: 抓取各源并生成缓存
+        run: node tools/build-feed-cache.mjs
+
+      - name: 有变化才提交
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add feed-cache.json
+          if git diff --cached --quiet; then
+            echo "缓存内容无变化，跳过提交"
+          else
+            git commit -m "chore(feed): 更新新闻源缓存 [skip ci]"
+            git push
+          fi
