@@ -1100,7 +1100,15 @@ async function renderInterpretation(news, panel) {
     + `带「原文」的下面附原句依据，可逐条自查；`
     + `「通用判断 / 推演 / 参考见解 / 术语翻译 / 思考提示」都<strong>不是</strong>原文内容，供你自行判断。</p>`;
 
-  panel.innerHTML = `<p class="io-sub">${escapeHtml(head)}</p>${legend}${html}`;
+  // 正文很短时如实说明：否则读者会以为"解读没做完"，其实是素材就这么多
+  const srcLen = String(src.text || "").replace(/\s+/g, "").length;
+  const shortNote = srcLen < 300
+    ? `<p class="imm-it-legend">提示：这条新闻拿到的正文只有 ${srcLen} 字`
+      + `（源站给的摘要很短，没读到完整文章），能解读出来的点自然就少；`
+      + `想看全的，请点下面的原文链接。</p>`
+    : "";
+
+  panel.innerHTML = `<p class="io-sub">${escapeHtml(head)}</p>${shortNote}${legend}${html}`;
 }
 
 /* ---------- 阶段 2：上下翻页 ---------- */

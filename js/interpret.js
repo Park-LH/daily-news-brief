@@ -71,6 +71,11 @@ const DOC_NAME_RE = /《([^》]{2,30})》/g;
 const DOC_TYPE_WORDS = ["规划", "方案", "意见", "通知", "办法", "规定", "纲要", "决定",
   "报告", "计划", "细则", "条例", "指南", "标准", "白皮书", "行动", "政策", "措施", "清单", "批复"];
 const GOAL_HINT_RE = /(目标|提出|要求|明确|力争|旨在|到(19|20)\d{2}年|意味着|标志|部署|试点|示范|推广|支持|鼓励)/;
+/* 没有书名号时的兜底：找"制度动作"句（出台了什么、建立了什么机制、印发了什么方案）。
+   2026-10-31 新增：原文不点名《…》时，「文件背后」整节会空掉，解读缺一大块。 */
+const INSTITUTION_RE = new RegExp(
+  "(出台|印发|发布|制定|编制|批准|通过|建立|健全|完善|形成|推出)([^。；]{0,12}?)"
+  + "(规划|方案|意见|办法|规定|条例|制度|机制|体系|标准|细则|清单|政策|措施)");
 
 /* 结构性信号 → 通用判断（**必须能指回触发它的原句**，否则不输出） */
 const STRUCT_SIGNALS = [
@@ -96,6 +101,10 @@ const COST_WORDS = ["成本", "负担", "压力", "涨价", "费用", "受限", 
 const SCALE_RE = /\d+(?:\.\d+)?\s*(?:万亿元|亿元|万元|亿美元|亿千瓦|万千瓦|万公里|颗|艘|架|台|公里|万吨|吨|%|个百分点|GW|MW)/;
 /* 机构 / 责任主体：用来回答"这件事是谁在办" */
 const ORG_RE = /[\u4e00-\u9fa5]{2,10}(?:局|部|委|厅|署|市政府|省政府|管委会|集团|公司|大学|研究院|协会|银行|中心|企业)/;
+/* ⚠️ 2026-10-31 修：上面这个正则会把"为产业**布局**""这种**格局**""某**部门**"
+   "物流网建设**部署**"当成机构名（实测输出过"谁来办：为产业布局"这种笑话）。
+   命中这些词的一律不算机构——它们不是某个具体单位。 */
+const ORG_FALSE_RE = /(布局|格局|全局|结局|局部|部门|总部|内部|外部|全部|大局|局面|时区|部署|公署)/;
 /* 机构名前面常带的介词，匹配到后要剥掉（"据中央纪委国家监委" → "中央纪委国家监委"） */
 const ORG_PREFIX_RE = /^(据|从|由|与|和|对|在|经|向|被|给)/;
 /* 原文直接点名的人群——民生维度没命中时，用它补足"这条跟谁有关" */
@@ -156,6 +165,10 @@ const FACT_RE = /(已|已经|完成|建成|投产|开通|获批|突破|达到|�
 const STANCE_RE = /(将|要|力争|旨在|推动|支持|强调|部署|要求|鼓励|规划|期待|相信|拟打造)/;
 // ⚠️ 2026-10-31 修：去掉裸的"计划"——"综合计划部"这种机构名会被误判成"还没定"
 const PENDING_RE = /(拟|征求意见|草案|待批|有待|研究(?:中|制定)?|探索|考虑|争取|计划于|计划将|有望|可能|预测)/;
+// 电头（"中新网银川10月31日电(记者 于晶)…"）是稿件元数据、不是新闻内容。
+// 它常同时含"将/要/记者"等字，被当成"表态 / 未定 / 事实"会输出莫名其妙的条目。
+// 做事实判断时一律跳过；时间线（起点）仍可用它取日期。
+const DATELINE_RE = /\d{1,2}月\d{1,2}日电|电\s*[（(]\s*记者/;
 
 /**
  * 取解读素材：优先文章页正文，其次 RSS 摘要
@@ -211,14 +224,40 @@ function pickByRe(sentences, re, limit, used) {
  * 有了下面这几个工具，解析句里就能带上从原文抠出来的具体片段
  * （谁、多少钱、什么时间、哪个文件），而不是空标签。 */
 
-/** 抠出"关键词前后"的一小段，让解析句带上具体内容 */
-function phraseAround(sentence, word, before = 6, after = 26) {
-  if (!sentence) return "";
-  const i = sentence.indexOf(word);
-  if (i < 0) return String(sentence).slice(0, 40);
-  const start = Math.max(0, i - before);
-  const end = Math.min(sentence.length, i + String(word).length + after);
-  return (start > 0 ? "…" : "") + sentence.slice(start, end) + (end < sentence.length ? "…" : "");
+/**
+ * 抠出"关键词前后"的一小段，让解析句带上具体内容。
+ *
+ * ⚠️ 2026-10-31 修：以前是按字数硬切，切出来常常是"…机制，提前为包银高铁…"
+ * 这种**拦腰截断**的半截话，用户看着就是"内容不完整"。
+ * 现在切完再往两头**扩到最近的停顿标点**，保证给出的是完整分句；
+ * 只有真的被截了才加省略号。
+ */
+function phraseAround(sentence, word, before = 14, after = 34) {
+  const s = String(sentence || "");
+  if (!s) return "";
+  const i = s.indexOf(word);
+  if (i < 0) return coreOf(s, 46);
+
+  let start = Math.max(0, i - before);
+  let end = Math.min(s.length, i + String(word).length + after);
+
+  // 往左扩：找到关键词之前最近的停顿标点，从它后面开始（别把词切一半）。
+  // 但切完只剩两三个字就不切了——"提前为包银高铁"这种半截读不出意思（2026-10-31 二修）
+  const head = s.slice(0, i);
+  const p = Math.max(head.lastIndexOf("，"), head.lastIndexOf("、"), head.lastIndexOf("；"),
+                     head.lastIndexOf("："), head.lastIndexOf("("), head.lastIndexOf("（"));
+  if (p >= 0 && p >= start - 10 && (i - p - 1) >= 6) start = p + 1;
+
+  // 往右扩：找到关键词之后最近的停顿标点，到它为止。
+  // 同样要求至少再往下读 10 个字，否则宁可不按标点切，保证片段有足够信息量
+  const tail = s.slice(i + String(word).length);
+  const q = tail.search(/[，。；、）)]/);
+  if (q >= 0) {
+    const cand = i + String(word).length + q;
+    if (q >= 10 && cand <= end + 10) end = cand;
+  }
+
+  return (start > 0 ? "…" : "") + s.slice(start, end) + (end < s.length ? "…" : "");
 }
 
 /** 取句子的核心片段（尽量在标点处收尾，别截在半截词上） */
@@ -246,7 +285,7 @@ function wordInsideOrg(sentence, word) {
 function quoteAfterVerb(sentence) {
   const m = String(sentence || "").match(/(表示|称|指出|认为|说|强调|呼吁|建议|批评|质疑|回应|介绍|透露|宣布)([^。！？]{0,60})/);
   if (!m) return "";
-  const q = m[2].replace(/^[,，:：、]?\s*/, "").replace(/^["“”']+/, "").trim();
+  const q = m[2].replace(/^[,，:：、]?\s*/, "").replace(/^["""']+/, "").trim();
   return q.length > 4 ? q.slice(0, 56) : "";
 }
 
@@ -321,7 +360,9 @@ function buildOrigin(sentences) {
     });
   }
 
-  const timeline = pickByRe(sentences, TIME_HINT_RE, 4, used);
+  // 2026-10-31 改：上限 4 → 6。原先只取 4 条，长新闻的脉络被砍掉一半，
+  // 用户看到的就是"不完整的来龙去脉"。
+  const timeline = pickByRe(sentences, TIME_HINT_RE, 6, used);
   timeline.forEach((s, i) => {
     // 标出这一步在整条链里的位置：第一条是起点，最后一条是最新进展
     const pos = i === 0 ? "起点" : (i === timeline.length - 1 ? "最新进展" : "中间一步");
@@ -331,6 +372,20 @@ function buildOrigin(sentences) {
       tag: "原文",
     });
   });
+
+  // 时间线索不足 2 条（很多新闻全文只有一两个时间点）→ 补"这件事本身是什么"，
+  // 否则这一节只剩孤零零一条，看起来就像没做完（2026-10-31 修）
+  if (timeline.length < 2) {
+    const main = sentences.filter(s => !used.has(s)).slice(0, 2);
+    main.forEach((s, i) => {
+      used.add(s);
+      items.push({
+        text: i === 0 ? `事情本身：${coreOf(s, 54)}` : `补充背景：${coreOf(s, 54)}`,
+        evidence: s,
+        tag: "原文",
+      });
+    });
+  }
 
   return { items, note: "" };
 }
@@ -370,6 +425,21 @@ function buildBehind(sentences) {
         : `点名文件《${nm}》，但原文只提到名称，没展开具体要求：${coreOf(withName, 56)}`,
       evidence: base,
       tag: "原文",
+    });
+  }
+
+  // 原文没点名任何《…》文件时，不要就把这一节空掉：
+  // 很多新闻谈的是制度/方案/机制但没写书名号，抽这些句子同样"有用且可核查"
+  // （2026-10-31 修：此前无书名号 → 整节消失，用户看到的就是解读缺一大块）
+  if (items.length === 0) {
+    const inst = pickByRe(sentences, INSTITUTION_RE, 3, used);
+    inst.forEach(s => {
+      const im = s.match(INSTITUTION_RE);
+      items.push({
+        text: `没有点名具体文件，但写到了这类制度动作：「${phraseAround(s, im ? im[0] : "", 6, 30)}」`,
+        evidence: s,
+        tag: "原文",
+      });
     });
   }
 
@@ -422,7 +492,12 @@ function buildImpact(sentences) {
   }
 
   // 涉及机构 / 责任主体：回答"这件事是谁在办"
-  const orgSent = sentences.find(s => !used.has(s) && ORG_RE.test(s));
+  // 机构名要排除两类误命中：
+  // ① "布局/格局/部门…"这类词（见 ORG_FALSE_RE 的注释）
+  // ② 图片署名句——"中卫市委宣传部供图"里的机构只是图片来源，不是责任主体（2026-10-31 修）
+  const orgSent = sentences.find(s => !used.has(s) && ORG_RE.test(s)
+    && !ORG_FALSE_RE.test((s.match(ORG_RE) || [""])[0])
+    && !/供图|图片来源|（图/.test(s));
   if (orgSent) {
     const om = orgSent.match(ORG_RE);
     // 剥掉"据 / 由 / 从…"这类前缀，否则会输出"据中央纪委国家监委"这种怪名字
@@ -476,6 +551,9 @@ function extractSpeaker(sentence) {
     if (tail.length >= 2) who = tail;
   }
   who = who.replace(/^(据|而|同时|此外|另外|其中|对此|并)/, "").trim();
+  // 抽出来的是"国家级专项规划""这份报告"这类**文件/事物**而不是人或单位 → 当作没抽到
+  // （2026-10-31 修：实测出现过"国家级专项规划的说法"，把文件当成了发言者）
+  if (/(规划|纲要|方案|报告|文件|通知|意见|办法|条例)$/.test(who)) return "";
   // 还不短的话，按职务词切："…总经理吴建军" → "吴建军"（2026-10-31 修：
   // 以前只按"的"切，"阿里巴巴千问AI硬件产品总经理吴建军"这种长头衔取不到名字，
   // 整串超长就被丢弃，说话人只能显示成"原文中的一方"）
@@ -533,7 +611,8 @@ function buildNext(sentences) {
   const used = new Set();
 
   // (a) 原文自己写的下一步 / 计划 / 时间表
-  const plans = pickByRe(sentences, NEXT_PLAN_RE, 2, used);
+  // 2026-10-31 改：2 → 3。原先只取 2 条，长新闻的"下一步"被截断
+  const plans = pickByRe(sentences, NEXT_PLAN_RE, 3, used);
   plans.forEach(s => {
     const m = s.match(NEXT_PLAN_RE);
     items.push({
@@ -558,7 +637,7 @@ function buildNext(sentences) {
   }
 
   // (c) 关键节点：只有原文真的提到 验收/推广/督查… 才提，不写死"三个观察点"
-  const nodes = pickByRe(sentences, NODE_RE, 2, used);
+  const nodes = pickByRe(sentences, NODE_RE, 3, used);
   nodes.forEach(s => {
     const m = s.match(NODE_RE);
     items.push({
@@ -613,21 +692,25 @@ function buildHowToThink(sentences) {
   const used = new Set();
   const full = sentences.join(" ");
 
-  const facts = pickByRe(sentences, FACT_RE, 2, used);
+  // 跳过电头句：那是稿件元数据，不是新闻内容（见 DATELINE_RE 注释）
+  const cands = sentences.filter(s => !DATELINE_RE.test(s));
+  const pool = cands.length ? cands : sentences;
+
+  const facts = pickByRe(pool, FACT_RE, 3, used);
   facts.forEach(s => items.push({
     text: `已经发生的事实：${coreOf(s, 54)}`,
     evidence: s,
     tag: "原文",
   }));
 
-  const stance = pickByRe(sentences, STANCE_RE, 1, used);
+  const stance = pickByRe(pool, STANCE_RE, 1, used);
   if (stance.length) items.push({
     text: `打算做 / 表态（还没发生，别当既成事实）：${coreOf(stance[0], 54)}`,
     evidence: stance[0],
     tag: "原文",
   });
 
-  const pending = pickByRe(sentences, PENDING_RE, 1, used);
+  const pending = pickByRe(pool, PENDING_RE, 1, used);
   if (pending.length) items.push({
     text: `还没定 / 待验证（草案、研究中，或只是预测）：${coreOf(pending[0], 54)}`,
     evidence: pending[0],
@@ -642,7 +725,7 @@ function buildHowToThink(sentences) {
   const docM = full.match(/《([^》]{2,30})》/);
   const moneyM = full.match(SCALE_RE);
   const dateM = full.match(/到(19|20)\d{2}年/);
-  const orgM = full.match(ORG_RE);
+  const orgM = (full.match(ORG_RE) && !ORG_FALSE_RE.test(full.match(ORG_RE)[0])) ? full.match(ORG_RE) : null;
 
   if (dateM) {
     views.push(`我的看法：这篇给了 ${dateM[0].replace("到", "")} 这个时间点，这是很值钱的信息——`
@@ -653,7 +736,7 @@ function buildHowToThink(sentences) {
       + `最硬的指标就是钱到没到位、谁出——比任何措辞都可靠。`);
   }
   if (docM) {
-    views.push(`我的看法：真正的看点是《${docM[1]}》的**配套细则**。`
+    views.push(`我的看法：真正的看点是《${docM[1]}》的配套细则。`
       + `文件本身通常只定方向，细则才写清谁出钱、谁执行、什么时候完成；细则不出，影响就落不了地。`);
   }
   if (orgM) {
@@ -662,8 +745,8 @@ function buildHowToThink(sentences) {
       + `最直接的办法是盯它的官网/通报，而不是等二手转述。`);
   }
   if (facts.length && stance.length) {
-    views.push(`我的看法：这条里"已经发生的"和"打算做的"是两回事——`
-      + `已发生部分是硬的、可以核实；"打算做"的部分还要看细则和资金，建议分开看待，别混在一起下结论。`);
+    views.push(`我的看法：这条里「已经发生的」和「打算做的」是两回事——`
+      + `已发生部分是硬的、可以核实；「打算做」的部分还要看细则和资金，建议分开看待，别混在一起下结论。`);
   } else if (!facts.length && stance.length) {
     views.push(`我的看法：通篇以"打算做 / 要推动"为主，目前没有既成事实可以核实。`
       + `这种消息先当"方向"看比较稳妥，等细则或资金中的任意一样落实了再认真对待。`);
