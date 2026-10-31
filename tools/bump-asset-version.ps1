@@ -38,6 +38,21 @@ if (-not $ver) { $ver = Get-Date -Format "yyyyMMddHHmm" }
 $ver = ($ver -replace '[^A-Za-z0-9]', '')
 if (-not $ver) { $ver = "1" }
 
+# ---- ③ 同步更新 sw.js 里的缓存版本（2026-10-31 新增，PWA）----
+# Service Worker 的缓存名 SW_CACHE 不变的话，用户掉线时命中的永远是旧壳；
+# 每次发版跟着换名，浏览器会自动清旧缓存、重新预热。
+$swPath = Join-Path $root "sw.js"
+if (Test-Path $swPath) {
+  $swRaw = [IO.File]::ReadAllText($swPath)
+  # 注：全仓库只有一处 SW_CACHE，直接全量替换即可（不用 [regex]::Replace 的 count 重载，
+  #     那个静态方法没有带 count 的版本，会绑定失败）
+  $swNew = $swRaw -replace 'const SW_CACHE\s*=\s*"[^"]*"', ('const SW_CACHE = "daily-news-shell-' + $ver + '"')
+  if ($swNew -ne $swRaw) {
+    [IO.File]::WriteAllText($swPath, $swNew, (New-Object Text.UTF8Encoding($false)))
+    Write-Host "已同步更新 sw.js 的 SW_CACHE → daily-news-shell-$ver"
+  }
+}
+
 # ---- 读文件（保留 UTF-8，且**保留原来有没有 BOM**）----
 # ⚠️ 为什么要管 BOM：第一版一律按"无 BOM"写回，结果把 index.html 原有的
 # BOM 悄悄抹掉了——`git diff` 看着只有几行变化，实际整个文件字节都变了。

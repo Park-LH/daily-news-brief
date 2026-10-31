@@ -298,6 +298,24 @@ body {
 
 .empty-tip { font-size: 13px; color: #94a3b8; }
 
+/* ===== 「📲 安装到桌面」按钮（2026-10-31 新增，PWA）=====
+   默认 hidden，浏览器支持一键安装（beforeinstallprompt）时由 js/pwa.js 显示；
+   装好之后（standalone 模式 / appinstalled）自动隐藏——装了再提示是废话。 */
+.btn-install {
+  margin: 10px auto 0;
+  display: inline-block;
+  font-size: 13px;
+  padding: 7px 14px;
+  border-radius: 999px;
+  border: 1px solid rgba(79, 70, 229, 0.35);
+  background: #eef2ff;
+  color: #4f46e5;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.btn-install:active { background: #e0e7ff; }
+
 /* ===== 手机端提示：用电脑看更高清的新闻图（2026-10-31 新增）=====
    只在窄屏显示，宽屏隐藏（见文件末尾的媒体查询） */
 .pc-hd-tip {

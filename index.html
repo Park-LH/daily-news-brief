@@ -9,6 +9,17 @@
      （不影响使用，但控制台一直有一条红字）。内嵌 SVG 后这条 404 消失，
      而且不增加仓库文件、也不受 .gitignore 影响。 -->
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Ctext y='26' font-size='26'%3E%F0%9F%93%B0%3C/text%3E%3C/svg%3E">
+<!-- ===== PWA（2026-10-31 新增）：把网站做成可安装的 APP =====
+     manifest 定义应用名 / 图标 / 独立窗口（装到桌面后没有地址栏）；
+     theme-color 让手机状态栏用主题色；
+     apple-* 三行是 iOS Safari 专用的（它不认 manifest 里的对应字段）；
+     js/pwa.js 负责：注册 Service Worker（掉线也能打开）+「安装到桌面」按钮。 -->
+<link rel="manifest" href="manifest.webmanifest">
+<meta name="theme-color" content="#4f46e5">
+<link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="default">
+<meta name="apple-mobile-web-app-title" content="每日简报">
 <!-- 样式表**不带**版本参数：源文件保持最干净的样子，任何环境下都能直接用。
      版本号由 start-server.ps1 在"发给浏览器那一刻"注入（见文件末尾说明），
      所以本地永远拿到最新 js/css；部署到静态托管时没有服务器注入，
@@ -17,7 +28,7 @@
      才会被替换**——部署到 GitHub Pages 时占位符原样上线，版本号永远不变，
      用户会一直看到旧页面。这种"依赖运行时替换"的写法一旦离开本地环境就是
      静默失效，已从源文件中彻底去掉（全仓库不再出现那个占位符）。 -->
-<link rel="stylesheet" href="css/style.css?v=202610312225">
+<link rel="stylesheet" href="css/style.css?v=202610312238">
 </head>
 <body>
 <div class="app">
@@ -28,6 +39,8 @@
     <h1>每日新闻简报</h1>
     <p class="date" id="dateText"></p>
     <button class="btn-generate" id="btnGenerate">生成今日简报</button>
+    <!-- 「安装到桌面」：浏览器支持一键安装时才显示（js/pwa.js 控制，见 style.css） -->
+    <button class="btn-install hidden" id="btnInstall">📲 安装到桌面</button>
 
     <!-- 视图切换开关（阶段 4 的正式开关，取代了阶段 1 的临时预览按钮）
          生成简报前隐藏；生成后可用，在「列表浏览」和「沉浸浏览」之间一键切换。
@@ -177,10 +190,10 @@
         只是用户在托管商的缓存期内（GitHub Pages 约 10 分钟）可能看到旧页面。
      3. **直接双击本文件（file://）**：没有服务器也没有版本号，但浏览器
         对本地文件的缓存很松，普通刷新即可。 -->
-<script src="js/summarize.js?v=202610312225"></script>
-<script src="js/interpret.js?v=202610312225"></script>
-<script src="js/config.js?v=202610312225"></script>
-<script src="js/rss.js?v=202610312225"></script>
+<script src="js/summarize.js?v=202610312238"></script>
+<script src="js/interpret.js?v=202610312238"></script>
+<script src="js/config.js?v=202610312238"></script>
+<script src="js/rss.js?v=202610312238"></script>
 <!-- ===== 新闻解读：独立放大页面（2026-10-31 改）=====
      以前解读是塞在沉浸卡片里的一小块，字号被压到 13~14px，手机上得眯着眼看。
      现在改成整屏的独立页面：全屏铺满、字号放到舒服的 17px（依据 15px），
@@ -195,9 +208,10 @@
   </div>
 </div>
 
-<script src="js/stats.js?v=202610312225"></script>
-<script src="js/fallbackImage.js?v=202610312225"></script>
-<script src="js/aiImage.js?v=202610312225"></script>
-<script src="js/app.js?v=202610312225"></script>
+<script src="js/stats.js?v=202610312238"></script>
+<script src="js/fallbackImage.js?v=202610312238"></script>
+<script src="js/aiImage.js?v=202610312238"></script>
+<script src="js/app.js?v=202610312238"></script>
+<script src="js/pwa.js?v=202610312238"></script>
 </body>
 </html>
