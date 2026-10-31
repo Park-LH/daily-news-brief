@@ -766,14 +766,18 @@ function renderImmersiveCard() {
       <!-- 「摘抄正文」展开后显示在这里，默认隐藏 -->
       <div class="imm-excerpt hidden" id="immExcerpt"></div>
 
+      <!-- 「新闻解读」展开后显示在这里，默认隐藏（三问：与你我有关 / 来龙去脉 / 文件背后） -->
+      <div class="imm-interpret hidden" id="immInterpret"></div>
+
       <div class="imm-meta">
         <span>来源：${escapeHtml(formatSourceLabel(news))}</span>
         ${news.time ? `<span>${news.time}</span>` : ""}
       </div>
 
-      <!-- 两个独立按钮：左边摘抄正文，右边打开原文 -->
+      <!-- 三个按钮：摘抄正文 / 新闻解读 / 打开原文 -->
       <div class="imm-actions">
         <button class="imm-btn-sub" id="immExcerptBtn">📄 摘抄正文</button>
+        <button class="imm-btn-sub" id="immInterpretBtn">🔍 新闻解读</button>
         <a class="imm-open" href="${escapeHtml(link)}" target="_blank" rel="noopener">
           打开原文 ↗
         </a>
@@ -900,7 +904,108 @@ async function renderExcerptPoints(news, panel) {
 // 直接绑在按钮上会失效，绑在不变的父容器 #immCard 上最稳
 $("immCard").addEventListener("click", e => {
   if (e.target.closest("#immExcerptBtn")) toggleExcerpt();
+  if (e.target.closest("#immInterpretBtn")) toggleInterpret();
 });
+
+/* ---------- 新闻解读（三问：与你我有关 / 来龙去脉 / 文件背后）---------- */
+
+/**
+ * 展开 / 收起「新闻解读」面板
+ *
+ * 与「摘抄正文」互斥：两个面板同时展开会把卡片挤得没法看，
+ * 所以展开一个时自动收起另一个（按钮文字也一并复位）。
+ */
+function toggleInterpret() {
+  const news = latestNews[immIndex];
+  if (!news) return;
+
+  const panel = $("immInterpret");
+  const summary = $("immSummary");
+  const btn = $("immInterpretBtn");
+  if (!panel || !summary || !btn) return;
+
+  const isHidden = panel.classList.contains("hidden");
+
+  if (isHidden) {
+    // 先把摘抄收起来（互斥），再展开解读
+    const exPanel = $("immExcerpt");
+    const exBtn = $("immExcerptBtn");
+    if (exPanel && !exPanel.classList.contains("hidden")) {
+      exPanel.classList.add("hidden");
+      if (exBtn) exBtn.textContent = "📄 摘抄正文";
+    }
+    panel.innerHTML = `<div class="imm-interpret-title">🔍 正在解读…</div>`;
+    panel.classList.remove("hidden");
+    summary.classList.add("hidden");
+    btn.textContent = "收起解读 ✕";
+    $("immCard").classList.add("interpret-open");
+    renderInterpretation(news, panel);
+  } else {
+    panel.classList.add("hidden");
+    summary.classList.remove("hidden");
+    btn.textContent = "🔍 新闻解读";
+    $("immCard").classList.remove("interpret-open");
+  }
+}
+
+/**
+ * 渲染「新闻解读」到面板
+ *
+ * 铁律（见 js/interpret.js 文件头）：**不编造**。
+ * 来自原文的条目附原句当依据；不是原文的打「通用判断」标签。
+ * 素材不足（没有正文）时如实说明，并指路原文。
+ *
+ * @param {Object} news  新闻对象
+ * @param {HTMLElement} panel 解读面板（#immInterpret）
+ */
+async function renderInterpretation(news, panel) {
+  // 解读要有正文才靠得住：没有正文就先试着取一次
+  if (news.contentFromSummary !== false) await fetchArticleBody(news);
+
+  // 用户可能在等待期间翻页或收起了面板
+  const livePanel = document.getElementById("immInterpret");
+  if (latestNews[immIndex] !== news || !livePanel || livePanel !== panel) return;
+
+  const result = buildInterpretation(news);
+  const src = interpretSource(news);
+
+  // 素材太少：解读一定空洞，如实说明，别拿几个字硬凑
+  if (!result.ok || String(src.text).replace(/\s+/g, "").length < 60) {
+    panel.innerHTML = `<div class="imm-interpret-title">🔍 新闻解读</div>
+      <p class="imm-interpret-empty">这条新闻的正文没读到（源站只给了很短的摘要），
+      没法做靠谱的解读。点右边「打开原文 ↗」可以看完整文章。</p>`;
+    return;
+  }
+
+  const head = result.fromFullText
+    ? "新闻解读（依据文章页正文）"
+    : "新闻解读（只有 RSS 摘要，解读会很有限）";
+
+  const html = result.sections.map(sec => {
+    const lines = [];
+    (sec.items || []).forEach(it => {
+      const tag = it.tag === "通用判断"
+        ? `<span class="imm-it-tag" title="这是根据文本信号做出的通用判断，原文没有这么写">通用判断</span>`
+        : `<span class="imm-it-tag is-fact">原文</span>`;
+      const ev = it.evidence
+        ? `<div class="imm-it-evidence">依据：${escapeHtml(it.evidence)}</div>`
+        : "";
+      lines.push(`<li>${tag}${escapeHtml(it.text)}${ev}</li>`);
+    });
+    const note = sec.note ? `<p class="imm-it-note">${escapeHtml(sec.note)}</p>` : "";
+    const generic = (sec.generic || []).length
+      ? `<ul class="imm-it-generic">${sec.generic.map(g =>
+          `<li><span class="imm-it-tag" title="非原文，仅供参考的追问角度">通用判断</span>${escapeHtml(g)}</li>`).join("")}</ul>`
+      : "";
+    return `<div class="imm-it-sec">
+        <div class="imm-it-sec-title">${escapeHtml(sec.title)}</div>
+        ${lines.length ? `<ul class="imm-it-list">${lines.join("")}</ul>` : ""}
+        ${note}${generic}
+      </div>`;
+  }).join("");
+
+  panel.innerHTML = `<div class="imm-interpret-title">🔍 ${head}</div>${html}`;
+}
 
 /* ---------- 阶段 2：上下翻页 ---------- */
 
@@ -1051,7 +1156,7 @@ if ("ontouchstart" in window) {
  */
 function scrollableTextUnder(target) {
   const el = target && target.closest
-    ? target.closest(".imm-summary, .imm-excerpt")
+    ? target.closest(".imm-summary, .imm-excerpt, .imm-interpret")
     : null;
   return el && el.scrollHeight > el.clientHeight ? el : null;
 }

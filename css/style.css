@@ -806,6 +806,100 @@ footer {
   color: var(--ink-light);
 }
 
+/* ===== 新闻解读面板（2026-10-31 新增）=====
+   三问：与你我有关 / 来龙去脉 / 文件背后。
+   每条都带"原文 / 通用判断"标签，原文条目还附原句依据，
+   让读者一眼分清哪句是新闻里写的、哪句是通用判断。 */
+.imm-interpret {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
+  background: #f8fafc;
+  border: 1px solid #e2e8f0;
+  border-radius: 12px;
+  padding: 12px 14px;
+}
+
+.imm-card.interpret-open .imm-interpret {
+  flex: 1;
+  min-height: 0;
+}
+
+.imm-interpret-title {
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--accent);
+  margin-bottom: 10px;
+}
+
+.imm-interpret-empty {
+  font-size: 14px;
+  line-height: 1.7;
+  color: var(--ink-light);
+}
+
+.imm-it-sec { margin-bottom: 14px; }
+.imm-it-sec:last-child { margin-bottom: 0; }
+
+.imm-it-sec-title {
+  font-size: 14px;
+  font-weight: 700;
+  color: #0f172a;
+  margin-bottom: 6px;
+}
+
+.imm-it-list, .imm-it-generic {
+  padding-left: 0;
+  margin: 0;
+  list-style: none;
+}
+
+.imm-it-list li, .imm-it-generic li {
+  font-size: 14px;
+  line-height: 1.75;
+  color: #334155;
+  margin-bottom: 8px;
+  padding-left: 2px;
+}
+
+.imm-it-tag {
+  display: inline-block;
+  font-size: 11px;
+  line-height: 1.6;
+  padding: 0 5px;
+  margin-right: 6px;
+  border-radius: 4px;
+  background: rgba(148, 163, 184, 0.22);
+  color: #64748b;
+  vertical-align: 1px;
+}
+
+.imm-it-tag.is-fact {
+  background: rgba(59, 130, 246, 0.16);
+  color: #2563eb;
+}
+
+/* 原文依据：灰底小字，摆在自己的结论下面，供读者自查 */
+.imm-it-evidence {
+  margin-top: 4px;
+  padding: 5px 8px;
+  font-size: 12.5px;
+  line-height: 1.65;
+  color: #64748b;
+  background: rgba(148, 163, 184, 0.12);
+  border-left: 3px solid rgba(148, 163, 184, 0.45);
+  border-radius: 0 6px 6px 0;
+  word-break: break-word;
+}
+
+.imm-it-note {
+  font-size: 13px;
+  line-height: 1.7;
+  color: var(--ink-light);
+  margin: 2px 0 0;
+}
+
 /* 卡片里"暂无新闻"的提示 */
 .imm-empty-card {
   flex: 1;
